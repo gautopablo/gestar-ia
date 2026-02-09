@@ -632,11 +632,11 @@ else:
     if not required_index_keys.issubset(set(st.session_state.master_indexes.keys())):
         st.session_state.master_indexes = build_master_indexes(st.session_state.master_data)
 
-# Cargar API Key desde .env
-api_key = os.getenv("GOOGLE_API_KEY")
+# Cargar API Key: prioridad Streamlit Secrets (deploy), fallback .env (local)
+api_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
 if not api_key:
     st.error(
-        "⚠️ API Key no configurada. Por favor, configura GOOGLE_API_KEY en el archivo .env"
+        "⚠️ API Key no configurada. Configura GOOGLE_API_KEY en Streamlit Secrets o en .env"
     )
     st.stop()
 
