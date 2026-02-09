@@ -5,6 +5,7 @@
 Reducir uso de tokens y aumentar precisión en creación de tickets moviendo la validación/mapeo de maestros al backend, manteniendo la estructura actual de base de datos.
 
 Incorporar la jerarquía operativa `Division -> Area -> Usuario` para inferir contexto automáticamente durante la creación del ticket.
+Incorporar `Fecha de Necesidad` como dato de expectativa del usuario sobre cuándo espera la resolución.
 
 ## Alcance
 
@@ -47,7 +48,7 @@ Nota:
 ### 3) Extracción IA mínima
 
 - Ajustar prompt para devolver:
-  - `intencion`, `titulo`, `descripcion`, `planta`, `division`, `area`, `categoria`, `subcategoria`, `prioridad`, `usuario_sugerido`.
+  - `intencion`, `titulo`, `descripcion`, `planta`, `division`, `area`, `categoria`, `subcategoria`, `prioridad`, `usuario_sugerido`, `fecha_necesidad`.
 - Enviar solo listas necesarias:
   - para `crear_ticket`: `plantas`, `areas`, `categorias`, `prioridades` y, si aplica, `subcategorias` filtradas por categoría detectada.
 - Excluir `usuarios` del prompt por defecto.
@@ -73,6 +74,7 @@ Nota:
   - `Subcategoria.CategoriaId` coherente con categoría.
   - `EstadoId` por defecto: `Abierto`.
   - `PrioridadId` por defecto: `Media` (si faltante).
+  - `FechaNecesidad`: aceptar vacío; si viene informada, normalizar a formato de fecha/hora y validar que no sea inválida.
   - `Usuario -> Area`: si hay usuario sugerido, validar que área del ticket sea la misma del usuario (o pedir confirmación).
   - `Area -> Division`: siempre validar consistencia jerárquica.
   - Prioridad operativa: se considera ticket "enriquecido" si tiene al menos `Area` o `Usuario_sugerido`.
@@ -81,15 +83,15 @@ Nota:
 
 - Crear `compute_completeness_score(draft, ids)` para etiquetar calidad del ticket.
 - Regla mínima recomendada:
-  - `alto`: tiene `Area` o `Usuario_sugerido`, y además `Categoria`.
-  - `medio`: tiene `Area` o `Usuario_sugerido`, pero sin `Categoria`.
+  - `alto`: tiene `Area` o `Usuario_sugerido`, y además `Categoria` y `FechaNecesidad`.
+  - `medio`: tiene `Area` o `Usuario_sugerido`, pero sin `FechaNecesidad` o sin `Categoria`.
   - `bajo`: no tiene ni `Area` ni `Usuario_sugerido`.
-- Este score no bloquea inserción; solo informa y prioriza triage.
+- Este score no bloquea inserción; solo informa y prioriza la revisión del responsable del área.
 
 ### 6) Inserción completa
 
 - Reemplazar inserción simplificada por inserción completa en `Tickets`.
-- Registrar `OriginalPrompt`, `ConfidenceScore`, `AiProcessingTime`.
+- Registrar `OriginalPrompt`, `ConfidenceScore`, `AiProcessingTime`, `FechaNecesidad` (nullable).
 
 ### 7) Manejo de errores y UX
 
@@ -106,7 +108,7 @@ Nota:
 1. `load_master_data()`
 2. `normalize_text()` + índices
 3. `map_entities_to_ids()` exacto con inferencia `usuario -> area -> division`
-4. validaciones e inserción completa
+4. validaciones e inserción completa (incluyendo `FechaNecesidad` cuando exista)
 5. prompt reducido sin usuarios
 
 ### Fase 2 - Robustez
@@ -143,7 +145,7 @@ Nota:
 - Mitigar con fuente de mapeo explícita (maestros/config) y validación obligatoria antes de insertar.
 
 5. Tickets con poco contexto por ausencia de `Area`/`Usuario_sugerido`:
-- Mitigar con advertencia de UX + score de completitud + cola de triage priorizada.
+- Mitigar con advertencia de UX + score de completitud + cola priorizada para revisión del responsable del área.
 
 ## Checklist de Aceptación
 
@@ -152,6 +154,7 @@ Nota:
 - [ ] Si se identifica usuario, se infieren `Area` y `Division` automáticamente.
 - [ ] Se valida coherencia `Usuario -> Area -> Division`.
 - [ ] La creación de ticket inserta campos relacionales completos.
+- [ ] Si se informa `Fecha de Necesidad`, se almacena normalizada en el ticket.
 - [ ] La creación de ticket no bloquea por faltantes de negocio.
 - [ ] Si faltan `Area` y `Usuario_sugerido`, se muestra advertencia no bloqueante.
 - [ ] Se detecta y gestiona ambigüedad de subcategorías.

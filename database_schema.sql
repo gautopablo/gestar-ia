@@ -70,8 +70,11 @@ CREATE TABLE Tickets (
     TicketId INT IDENTITY(1,1) PRIMARY KEY,
     Title NVARCHAR(200) NOT NULL,
     Description NVARCHAR(MAX) NOT NULL,
-    RequesterId INT NOT NULL,
-    AssigneeId INT NULL,
+    
+    -- Usuarios (3 roles en el flujo de asignación)
+    RequesterId INT NOT NULL,              -- Solicitante: Usuario que crea el ticket
+    SuggestedAssigneeId INT NULL,          -- Usuario Sugerido: Propuesto por el solicitante
+    AssigneeId INT NULL,                   -- Usuario Asignado: Formalmente responsable (asignado posteriormente)
     
     -- Localización y Categoría
     PlantaId INT NOT NULL,
@@ -88,6 +91,7 @@ CREATE TABLE Tickets (
     OriginalPrompt NVARCHAR(MAX) NULL,
     AiProcessingTime INT NULL, -- en ms
     ConversationId NVARCHAR(100) NULL,
+    NeedByAt DATETIME2 NULL, -- Fecha/hora esperada de resolución (Fecha de Necesidad)
     
     -- Fechas
     CreatedAt DATETIME2 DEFAULT GETDATE(),
@@ -95,6 +99,7 @@ CREATE TABLE Tickets (
     ClosedAt DATETIME2 NULL,
     
     CONSTRAINT FK_Tickets_Requester FOREIGN KEY (RequesterId) REFERENCES Users(UserId),
+    CONSTRAINT FK_Tickets_SuggestedAssignee FOREIGN KEY (SuggestedAssigneeId) REFERENCES Users(UserId),
     CONSTRAINT FK_Tickets_Assignee FOREIGN KEY (AssigneeId) REFERENCES Users(UserId),
     CONSTRAINT FK_Tickets_Plantas FOREIGN KEY (PlantaId) REFERENCES Plantas(PlantaId),
     CONSTRAINT FK_Tickets_Areas FOREIGN KEY (AreaId) REFERENCES Areas(AreaId),
