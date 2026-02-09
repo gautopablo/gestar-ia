@@ -40,3 +40,4 @@ ENV/
 # IDEs
 .vscode/
 .idea/
+*.db-journal

@@ -90,7 +90,19 @@ def safe_parse_datetime(value):
 
 def load_user_area_division_map():
     if not os.path.exists(USER_AREA_DIVISION_MAP_PATH):
-        return {}
+        # Fallback to seed data if file doesn't exist
+        try:
+            from seed_data import USER_AREA_DIVISION_MAP
+
+            out = {}
+            for username, mapping in USER_AREA_DIVISION_MAP.items():
+                out[normalize_text(username)] = {
+                    "area": mapping.get("area"),
+                    "division": mapping.get("division"),
+                }
+            return out
+        except ImportError:
+            return {}
     try:
         with open(USER_AREA_DIVISION_MAP_PATH, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -154,7 +166,9 @@ def build_master_indexes(master_data):
     user_area_division = load_user_area_division_map()
     for norm_user, mapping in user_area_division.items():
         area = indexes["areas_by_norm"].get(normalize_text(mapping.get("area")))
-        division = indexes["divisiones_by_norm"].get(normalize_text(mapping.get("division")))
+        division = indexes["divisiones_by_norm"].get(
+            normalize_text(mapping.get("division"))
+        )
         indexes["user_to_area_division"][norm_user] = {
             "area_id": area["id"] if area else None,
             "division_id": division["id"] if division else None,
@@ -297,7 +311,9 @@ def map_entities_to_ids(draft, indexes, master_data):
         if not mapped["division_id"]:
             mapped["division_id"] = area["division_id"]
 
-    categoria = indexes["categorias_by_norm"].get(normalize_text(draft.get("categoria")))
+    categoria = indexes["categorias_by_norm"].get(
+        normalize_text(draft.get("categoria"))
+    )
     if categoria:
         mapped["categoria_id"] = categoria["id"]
 
@@ -305,7 +321,9 @@ def map_entities_to_ids(draft, indexes, master_data):
     if prio:
         mapped["prioridad_id"] = prio["id"]
 
-    usuario, user_warning = resolve_user_candidate(draft.get("usuario_sugerido"), indexes)
+    usuario, user_warning = resolve_user_candidate(
+        draft.get("usuario_sugerido"), indexes
+    )
     if usuario:
         mapped["suggested_assignee_id"] = usuario["id"]
         rel = indexes["user_to_area_division"].get(normalize_text(usuario["username"]))
@@ -314,19 +332,29 @@ def map_entities_to_ids(draft, indexes, master_data):
                 mapped["area_id"] = rel["area_id"]
             if not mapped["division_id"] and rel.get("division_id"):
                 mapped["division_id"] = rel["division_id"]
-            if mapped["area_id"] and rel.get("area_id") and mapped["area_id"] != rel["area_id"]:
-                warnings.append("El área indicada no coincide con el área asociada al usuario sugerido.")
+            if (
+                mapped["area_id"]
+                and rel.get("area_id")
+                and mapped["area_id"] != rel["area_id"]
+            ):
+                warnings.append(
+                    "El área indicada no coincide con el área asociada al usuario sugerido."
+                )
     elif user_warning and draft.get("usuario_sugerido"):
         warnings.append(user_warning)
 
     sub_norm = normalize_text(draft.get("subcategoria"))
     if sub_norm:
         if mapped["categoria_id"]:
-            sub = indexes["subcats_by_categoria_and_norm"].get((mapped["categoria_id"], sub_norm))
+            sub = indexes["subcats_by_categoria_and_norm"].get(
+                (mapped["categoria_id"], sub_norm)
+            )
             if sub:
                 mapped["subcategoria_id"] = sub["id"]
             else:
-                warnings.append("La subcategoría no coincide con la categoría seleccionada.")
+                warnings.append(
+                    "La subcategoría no coincide con la categoría seleccionada."
+                )
         else:
             candidates = indexes["subcategorias_by_norm"].get(sub_norm, [])
             if len(candidates) == 1:
@@ -334,7 +362,9 @@ def map_entities_to_ids(draft, indexes, master_data):
                 if not mapped["categoria_id"]:
                     mapped["categoria_id"] = candidates[0]["categoria_id"]
             elif len(candidates) > 1:
-                warnings.append("Subcategoría ambigua: se necesita categoría para resolverla.")
+                warnings.append(
+                    "Subcategoría ambigua: se necesita categoría para resolverla."
+                )
 
     if mapped["area_id"] and mapped["division_id"]:
         area_row = indexes["areas_by_id"].get(mapped["area_id"])
@@ -342,7 +372,11 @@ def map_entities_to_ids(draft, indexes, master_data):
             warnings.append("El área seleccionada no pertenece a la división indicada.")
 
     estado = next(
-        (e for e in master_data.get("estados", []) if normalize_text(e["nombre"]) == "abierto"),
+        (
+            e
+            for e in master_data.get("estados", [])
+            if normalize_text(e["nombre"]) == "abierto"
+        ),
         None,
     )
     mapped["estado_id"] = estado["id"] if estado else None
@@ -435,33 +469,68 @@ def init_db():
     if "NeedByAt" not in ticket_cols:
         cursor.execute("ALTER TABLE Tickets ADD COLUMN NeedByAt DATETIME")
 
-    # Datos Semilla
-    master_data = {
-        "Estados": [("Abierto",), ("En Progreso",), ("Cerrado",)],
-        "Prioridades": [("Baja", 3), ("Media", 2), ("Alta", 1), ("Crítica", 0)],
-        "Divisiones": [("Sellado",), ("Forja",), ("Distribución",)],
-        "Plantas": [("Planta 1",), ("Planta 2",)],
-        "Categorias": [("Mantenimiento",), ("IT",), ("Producción",)],
-        "Users": [
-            ("juan_perez", "juan@empresa.com", "Solicitante"),
-            ("tecnico_1", "soporte@empresa.com", "Tecnico"),
-        ],
-    }
+    # Datos Semilla - Importar desde seed_data.py
+    from seed_data import (
+        ESTADOS,
+        PRIORIDADES,
+        DIVISIONES,
+        PLANTAS,
+        CATEGORIAS,
+        SUBCATEGORIAS,
+        AREAS,
+        USERS,
+    )
 
-    for table, data in master_data.items():
-        placeholders = ",".join(["?"] * len(data[0]))
-        cursor.executemany(
-            f"INSERT OR IGNORE INTO {table} ({','.join(['Nombre', 'Nivel'] if table == 'Prioridades' else ['Username', 'Email', 'Role'] if table == 'Users' else ['Nombre'])}) VALUES ({placeholders})",
-            data,
+    # Insertar datos básicos (sin foreign keys)
+    for estado in ESTADOS:
+        cursor.execute("INSERT OR IGNORE INTO Estados (Nombre) VALUES (?)", estado)
+
+    for prio in PRIORIDADES:
+        cursor.execute(
+            "INSERT OR IGNORE INTO Prioridades (Nombre, Nivel) VALUES (?, ?)", prio
         )
 
-    # Subcategorías y Áreas iniciales
-    cursor.execute(
-        "INSERT OR IGNORE INTO Subcategorias (Nombre, CategoriaId) SELECT 'Falla Eléctrica', CategoriaId FROM Categorias WHERE Nombre = 'Mantenimiento'"
-    )
-    cursor.execute(
-        "INSERT OR IGNORE INTO Areas (Nombre, DivisionId) SELECT 'Prensa 1', DivisionId FROM Divisiones WHERE Nombre = 'Forja'"
-    )
+    for division in DIVISIONES:
+        cursor.execute("INSERT OR IGNORE INTO Divisiones (Nombre) VALUES (?)", division)
+
+    for planta in PLANTAS:
+        cursor.execute("INSERT OR IGNORE INTO Plantas (Nombre) VALUES (?)", planta)
+
+    for categoria in CATEGORIAS:
+        cursor.execute(
+            "INSERT OR IGNORE INTO Categorias (Nombre) VALUES (?)", categoria
+        )
+
+    for user in USERS:
+        cursor.execute(
+            "INSERT OR IGNORE INTO Users (Username, Email, Role) VALUES (?, ?, ?)", user
+        )
+
+    conn.commit()
+
+    # Insertar subcategorías (requiere resolver CategoriaId)
+    for subcat_nombre, categoria_nombre in SUBCATEGORIAS:
+        cursor.execute(
+            "SELECT CategoriaId FROM Categorias WHERE Nombre = ?", (categoria_nombre,)
+        )
+        cat_row = cursor.fetchone()
+        if cat_row:
+            cursor.execute(
+                "INSERT OR IGNORE INTO Subcategorias (Nombre, CategoriaId) VALUES (?, ?)",
+                (subcat_nombre, cat_row[0]),
+            )
+
+    # Insertar áreas (requiere resolver DivisionId)
+    for area_nombre, division_nombre in AREAS:
+        cursor.execute(
+            "SELECT DivisionId FROM Divisiones WHERE Nombre = ?", (division_nombre,)
+        )
+        div_row = cursor.fetchone()
+        if div_row:
+            cursor.execute(
+                "INSERT OR IGNORE INTO Areas (Nombre, DivisionId) VALUES (?, ?)",
+                (area_nombre, div_row[0]),
+            )
 
     conn.commit()
     conn.close()
@@ -544,7 +613,10 @@ class TicketAssistant:
         descripcion_display = draft.get("descripcion") or "Sin descripción detallada"
         planta_display = draft.get("planta") or "No especificada"
         division_display = draft.get("division") or "No especificada"
-        area_display = draft.get("area") or "Sin asignar (Se definirá en revisión del responsable del área)"
+        area_display = (
+            draft.get("area")
+            or "Sin asignar (Se definirá en revisión del responsable del área)"
+        )
         categoria_display = draft.get("categoria") or "No especificada"
         subcategoria_display = draft.get("subcategoria") or "No especificada"
         prioridad_display = draft.get("prioridad") or "Media (Por defecto)"
@@ -630,10 +702,19 @@ else:
         "user_to_area_division",
     }
     if not required_index_keys.issubset(set(st.session_state.master_indexes.keys())):
-        st.session_state.master_indexes = build_master_indexes(st.session_state.master_data)
+        st.session_state.master_indexes = build_master_indexes(
+            st.session_state.master_data
+        )
 
 # Cargar API Key: prioridad Streamlit Secrets (deploy), fallback .env (local)
-api_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
+try:
+    api_key = st.secrets.get("GOOGLE_API_KEY")
+except (FileNotFoundError, KeyError):
+    api_key = None
+
+if not api_key:
+    api_key = os.getenv("GOOGLE_API_KEY")
+
 if not api_key:
     st.error(
         "⚠️ API Key no configurada. Configura GOOGLE_API_KEY en Streamlit Secrets o en .env"
@@ -653,7 +734,9 @@ with st.sidebar:
     st.divider()
     if st.button("Refrescar Maestros"):
         st.session_state.master_data = load_master_data()
-        st.session_state.master_indexes = build_master_indexes(st.session_state.master_data)
+        st.session_state.master_indexes = build_master_indexes(
+            st.session_state.master_data
+        )
         st.success("Datos maestros actualizados.")
     st.subheader("🛠️ Debug Area")
     debug_expander = st.expander("Estado Interno", expanded=False)
@@ -872,7 +955,9 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     st.session_state.ticket_draft.get("usuario_sugerido"),
                     st.session_state.master_indexes,
                 )
-                st.session_state.ticket_draft["usuario_sugerido_resuelto"] = resolved_user
+                st.session_state.ticket_draft["usuario_sugerido_resuelto"] = (
+                    resolved_user
+                )
 
                 # 2. Generar mensaje de revisión o bloqueo
                 bot_res, bloqueante = assistant.generate_review_message(
