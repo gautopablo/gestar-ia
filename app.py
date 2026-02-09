@@ -11,10 +11,6 @@ try:
     import pyodbc
 except ImportError:
     pyodbc = None
-try:
-    import pymssql
-except ImportError:
-    pymssql = None
 
 # Cargar variables de entorno
 load_dotenv()
@@ -49,46 +45,12 @@ def get_azure_master_connection():
     conn_str = get_secret("ODBC_CONN_STR")
     if not conn_str:
         raise RuntimeError("Falta ODBC_CONN_STR en Streamlit Secrets o .env")
-
-    errors = []
-
-    # Opcion preferida: pyodbc + ODBC Driver 18
-    if pyodbc is not None:
-        try:
-            return pyodbc.connect(conn_str)
-        except Exception as e:
-            errors.append(f"pyodbc: {e}")
-
-    # Fallback: pymssql (sin driver nativo del sistema)
-    if pymssql is not None:
-        try:
-            parts = {}
-            for chunk in conn_str.split(";"):
-                if "=" not in chunk:
-                    continue
-                k, v = chunk.split("=", 1)
-                parts[k.strip().lower()] = v.strip().strip("{}")
-
-            raw_server = parts.get("server", "")
-            if raw_server.lower().startswith("tcp:"):
-                raw_server = raw_server[4:]
-            host, port = (raw_server.split(",", 1) + ["1433"])[:2]
-
-            return pymssql.connect(
-                server=host,
-                user=parts.get("uid"),
-                password=parts.get("pwd"),
-                database=parts.get("database"),
-                port=int(port),
-                login_timeout=int(parts.get("connection timeout", "30")),
-                timeout=int(parts.get("connection timeout", "30")),
-                tds_version="7.4",
-            )
-        except Exception as e:
-            errors.append(f"pymssql: {e}")
-
-    detail = " | ".join(errors) if errors else "No hay drivers Python disponibles."
-    raise RuntimeError(f"No se pudo conectar a Azure SQL. {detail}")
+    if pyodbc is None:
+        raise RuntimeError("pyodbc no está instalado")
+    try:
+        return pyodbc.connect(conn_str)
+    except Exception as e:
+        raise RuntimeError(f"No se pudo conectar a Azure SQL por ODBC: {e}")
 
 
 def get_master_schema():
@@ -328,54 +290,58 @@ def load_master_data():
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
+        def run_fetchall(sql):
+            cursor.execute(sql)
+            return cursor.fetchall()
+
         master_data = {
             "plantas": [
                 {"id": row[0], "nombre": row[1]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT PlantaId, Nombre FROM {qname('Plantas')} WHERE Activo = 1"
-                ).fetchall()
+                )
             ],
             "divisiones": [
                 {"id": row[0], "nombre": row[1]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT DivisionId, Nombre FROM {qname('Divisiones')} WHERE Activo = 1"
-                ).fetchall()
+                )
             ],
             "areas": [
                 {"id": row[0], "nombre": row[1], "division_id": row[2]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT AreaId, Nombre, DivisionId FROM {qname('Areas')} WHERE Activo = 1"
-                ).fetchall()
+                )
             ],
             "categorias": [
                 {"id": row[0], "nombre": row[1]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT CategoriaId, Nombre FROM {qname('Categorias')} WHERE Activo = 1"
-                ).fetchall()
+                )
             ],
             "subcategorias": [
                 {"id": row[0], "nombre": row[1], "categoria_id": row[2]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT SubcategoriaId, Nombre, CategoriaId FROM {qname('Subcategorias')} WHERE Activo = 1"
-                ).fetchall()
+                )
             ],
             "prioridades": [
                 {"id": row[0], "nombre": row[1], "nivel": row[2]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT PrioridadId, Nombre, Nivel FROM {qname('Prioridades')}"
-                ).fetchall()
+                )
             ],
             "estados": [
                 {"id": row[0], "nombre": row[1]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT EstadoId, Nombre FROM {qname('Estados')}"
-                ).fetchall()
+                )
             ],
             "usuarios": [
                 {"id": row[0], "username": row[1], "email": row[2], "role": row[3]}
-                for row in cursor.execute(
+                for row in run_fetchall(
                     f"SELECT UserId, Username, Email, Role FROM {qname('Users')} WHERE Active = 1"
-                ).fetchall()
+                )
             ],
         }
         return master_data
