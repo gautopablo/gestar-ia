@@ -1,5 +1,4 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import json
 import google.generativeai as genai
@@ -8,6 +7,10 @@ import os
 import re
 import unicodedata
 from dotenv import load_dotenv
+try:
+    import pyodbc
+except ImportError:
+    pyodbc = None
 
 # Cargar variables de entorno
 load_dotenv()
@@ -16,7 +19,6 @@ load_dotenv()
 # 1. CONFIGURACIÓN Y BASE DE DATOS
 # ==========================================
 
-DB_PATH = "tickets_mvp.db"
 USER_AREA_DIVISION_MAP_PATH = "info/user_area_division_map.json"
 
 
@@ -29,26 +31,80 @@ def normalize_text(value):
     return re.sub(r"\s+", " ", text)
 
 
+def get_secret(name, default=None):
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        value = default
+    if value not in (None, ""):
+        return value
+    return os.getenv(name, default)
+
+
+def get_azure_master_connection():
+    conn_str = get_secret("ODBC_CONN_STR")
+    if not conn_str:
+        raise RuntimeError("Falta ODBC_CONN_STR en Streamlit Secrets o .env")
+    if pyodbc is None:
+        raise RuntimeError("pyodbc no está instalado")
+    return pyodbc.connect(conn_str)
+
+
+def get_master_schema():
+    return get_secret("DB_SCHEMA", "gestar")
+
+
+def qname(table_name):
+    return f"{get_master_schema()}.{table_name}"
+
+
 def safe_parse_datetime(value):
     if not value:
         return None
     txt = normalize_text(value)
+    # Quitar puntuación para tolerar entradas como "hoy." o "hoy,"
+    txt = re.sub(r"[^\w\s/:-]", " ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
     now = datetime.now()
 
     # Quitar prefijos comunes para interpretar mejor fechas en lenguaje natural
     txt = re.sub(
-        r"^(para|por|antes de|a mas tardar|como maximo|hasta)\s+",
+        r"^(fecha|para|por|antes de|a mas tardar|como maximo|hasta)\s+",
         "",
         txt,
     )
 
-    if txt in ("hoy",):
+    if txt == "hoy":
         return now.replace(hour=17, minute=0, second=0, microsecond=0)
-    if txt in ("manana",):
+    if txt == "manana":
         target = now + timedelta(days=1)
         return target.replace(hour=17, minute=0, second=0, microsecond=0)
-    if txt in ("pasado manana",):
+    if txt == "pasado manana":
         target = now + timedelta(days=2)
+        return target.replace(hour=17, minute=0, second=0, microsecond=0)
+
+    # Expresiones de día de semana: "el proximo lunes", "proximo martes", etc.
+    weekdays = {
+        "lunes": 0,
+        "martes": 1,
+        "miercoles": 2,
+        "jueves": 3,
+        "viernes": 4,
+        "sabado": 5,
+        "domingo": 6,
+    }
+    m_weekday = re.search(
+        r"^(el\s+)?(?:(proximo|este)\s+)?(lunes|martes|miercoles|jueves|viernes|sabado|domingo)$",
+        txt,
+    )
+    if m_weekday:
+        qualifier = m_weekday.group(2)
+        target_weekday = weekdays[m_weekday.group(3)]
+        delta_days = (target_weekday - now.weekday()) % 7
+        # "proximo lunes": siempre la siguiente ocurrencia (si hoy es lunes, +7)
+        if qualifier == "proximo" and delta_days == 0:
+            delta_days = 7
+        target = now + timedelta(days=delta_days)
         return target.replace(hour=17, minute=0, second=0, microsecond=0)
 
     m = re.search(r"dentro de (\d{1,3}) dias", txt)
@@ -78,7 +134,14 @@ def safe_parse_datetime(value):
         target = now + timedelta(days=words_to_days[m_words.group(1)])
         return target.replace(hour=17, minute=0, second=0, microsecond=0)
 
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%Y/%m/%d",
+        "%d/%m/%y",
+        "%d-%m-%y",
+    ):
         try:
             return datetime.strptime(str(value).strip(), fmt).replace(
                 hour=17, minute=0, second=0, microsecond=0
@@ -221,66 +284,98 @@ def format_full_name_from_username(username):
 
 
 def load_master_data():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    master_data = {
-        "plantas": [
-            {"id": row[0], "nombre": row[1]}
-            for row in cursor.execute(
-                "SELECT PlantaId, Nombre FROM Plantas WHERE Activo = 1"
-            ).fetchall()
-        ],
-        "divisiones": [
-            {"id": row[0], "nombre": row[1]}
-            for row in cursor.execute(
-                "SELECT DivisionId, Nombre FROM Divisiones WHERE Activo = 1"
-            ).fetchall()
-        ],
-        "areas": [
-            {"id": row[0], "nombre": row[1], "division_id": row[2]}
-            for row in cursor.execute(
-                "SELECT AreaId, Nombre, DivisionId FROM Areas WHERE Activo = 1"
-            ).fetchall()
-        ],
-        "categorias": [
-            {"id": row[0], "nombre": row[1]}
-            for row in cursor.execute(
-                "SELECT CategoriaId, Nombre FROM Categorias WHERE Activo = 1"
-            ).fetchall()
-        ],
-        "subcategorias": [
-            {"id": row[0], "nombre": row[1], "categoria_id": row[2]}
-            for row in cursor.execute(
-                "SELECT SubcategoriaId, Nombre, CategoriaId FROM Subcategorias WHERE Activo = 1"
-            ).fetchall()
-        ],
-        "prioridades": [
-            {"id": row[0], "nombre": row[1], "nivel": row[2]}
-            for row in cursor.execute(
-                "SELECT PrioridadId, Nombre, Nivel FROM Prioridades"
-            ).fetchall()
-        ],
-        "estados": [
-            {"id": row[0], "nombre": row[1]}
-            for row in cursor.execute("SELECT EstadoId, Nombre FROM Estados").fetchall()
-        ],
-        "usuarios": [
-            {"id": row[0], "username": row[1], "email": row[2], "role": row[3]}
-            for row in cursor.execute(
-                "SELECT UserId, Username, Email, Role FROM Users WHERE Active = 1"
-            ).fetchall()
-        ],
-    }
-    conn.close()
-    return master_data
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        master_data = {
+            "plantas": [
+                {"id": row[0], "nombre": row[1]}
+                for row in cursor.execute(
+                    f"SELECT PlantaId, Nombre FROM {qname('Plantas')} WHERE Activo = 1"
+                ).fetchall()
+            ],
+            "divisiones": [
+                {"id": row[0], "nombre": row[1]}
+                for row in cursor.execute(
+                    f"SELECT DivisionId, Nombre FROM {qname('Divisiones')} WHERE Activo = 1"
+                ).fetchall()
+            ],
+            "areas": [
+                {"id": row[0], "nombre": row[1], "division_id": row[2]}
+                for row in cursor.execute(
+                    f"SELECT AreaId, Nombre, DivisionId FROM {qname('Areas')} WHERE Activo = 1"
+                ).fetchall()
+            ],
+            "categorias": [
+                {"id": row[0], "nombre": row[1]}
+                for row in cursor.execute(
+                    f"SELECT CategoriaId, Nombre FROM {qname('Categorias')} WHERE Activo = 1"
+                ).fetchall()
+            ],
+            "subcategorias": [
+                {"id": row[0], "nombre": row[1], "categoria_id": row[2]}
+                for row in cursor.execute(
+                    f"SELECT SubcategoriaId, Nombre, CategoriaId FROM {qname('Subcategorias')} WHERE Activo = 1"
+                ).fetchall()
+            ],
+            "prioridades": [
+                {"id": row[0], "nombre": row[1], "nivel": row[2]}
+                for row in cursor.execute(
+                    f"SELECT PrioridadId, Nombre, Nivel FROM {qname('Prioridades')}"
+                ).fetchall()
+            ],
+            "estados": [
+                {"id": row[0], "nombre": row[1]}
+                for row in cursor.execute(
+                    f"SELECT EstadoId, Nombre FROM {qname('Estados')}"
+                ).fetchall()
+            ],
+            "usuarios": [
+                {"id": row[0], "username": row[1], "email": row[2], "role": row[3]}
+                for row in cursor.execute(
+                    f"SELECT UserId, Username, Email, Role FROM {qname('Users')} WHERE Active = 1"
+                ).fetchall()
+            ],
+        }
+        return master_data
+    finally:
+        conn.close()
 
 
 def get_llm_catalogs(master_data):
+    def unique_in_order(values):
+        seen = set()
+        out = []
+        for value in values:
+            if not value:
+                continue
+            norm = normalize_text(value)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            out.append(value)
+        return out
+
     return {
-        "plantas": [p["nombre"] for p in master_data.get("plantas", [])],
-        "areas": [a["nombre"] for a in master_data.get("areas", [])],
-        "categorias": [c["nombre"] for c in master_data.get("categorias", [])],
-        "prioridades": [p["nombre"] for p in master_data.get("prioridades", [])],
+        "plantas": unique_in_order(
+            [p["nombre"] for p in master_data.get("plantas", [])]
+        ),
+        "divisiones": unique_in_order(
+            [d["nombre"] for d in master_data.get("divisiones", [])]
+        ),
+        "areas": unique_in_order([a["nombre"] for a in master_data.get("areas", [])]),
+        "categorias": unique_in_order(
+            [c["nombre"] for c in master_data.get("categorias", [])]
+        ),
+        "subcategorias": unique_in_order(
+            [s["nombre"] for s in master_data.get("subcategorias", [])]
+        ),
+        "prioridades": unique_in_order(
+            [p["nombre"] for p in master_data.get("prioridades", [])]
+        ),
+        "usuarios": unique_in_order(
+            [u["username"] for u in master_data.get("usuarios", [])]
+        ),
     }
 
 
@@ -400,150 +495,15 @@ def compute_completeness_score(draft, ids):
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    # Tablas Maestras (basadas en database_schema.sql)
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Plantas (PlantaId INTEGER PRIMARY KEY AUTOINCREMENT, Nombre TEXT UNIQUE, Activo INTEGER DEFAULT 1)"
-    )
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Divisiones (DivisionId INTEGER PRIMARY KEY AUTOINCREMENT, Nombre TEXT UNIQUE, Activo INTEGER DEFAULT 1)"
-    )
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Areas (AreaId INTEGER PRIMARY KEY AUTOINCREMENT, Nombre TEXT, DivisionId INTEGER, Activo INTEGER DEFAULT 1, FOREIGN KEY (DivisionId) REFERENCES Divisiones(DivisionId))"
-    )
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Categorias (CategoriaId INTEGER PRIMARY KEY AUTOINCREMENT, Nombre TEXT UNIQUE, Activo INTEGER DEFAULT 1)"
-    )
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Subcategorias (SubcategoriaId INTEGER PRIMARY KEY AUTOINCREMENT, Nombre TEXT, CategoriaId INTEGER, Activo INTEGER DEFAULT 1, FOREIGN KEY (CategoriaId) REFERENCES Categorias(CategoriaId))"
-    )
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Prioridades (PrioridadId INTEGER PRIMARY KEY AUTOINCREMENT, Nombre TEXT UNIQUE, Nivel INTEGER)"
-    )
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Estados (EstadoId INTEGER PRIMARY KEY AUTOINCREMENT, Nombre TEXT UNIQUE)"
-    )
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS Users (UserId INTEGER PRIMARY KEY AUTOINCREMENT, Username TEXT UNIQUE, Email TEXT UNIQUE, Role TEXT, Active INTEGER DEFAULT 1, CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)"
-    )
-
-    # Tabla Tickets
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS Tickets (
-        TicketId INTEGER PRIMARY KEY AUTOINCREMENT,
-        Title TEXT,
-        Description TEXT,
-        RequesterId INTEGER,
-        SuggestedAssigneeId INTEGER,
-        AssigneeId INTEGER,
-        PlantaId INTEGER,
-        AreaId INTEGER,
-        CategoriaId INTEGER,
-        SubcategoriaId INTEGER,
-        PrioridadId INTEGER,
-        EstadoId INTEGER,
-        ConfidenceScore REAL,
-        OriginalPrompt TEXT,
-        AiProcessingTime INTEGER,
-        ConversationId TEXT,
-        NeedByAt DATETIME,
-        CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UpdatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (RequesterId) REFERENCES Users(UserId),
-        FOREIGN KEY (SuggestedAssigneeId) REFERENCES Users(UserId),
-        FOREIGN KEY (AssigneeId) REFERENCES Users(UserId),
-        FOREIGN KEY (PlantaId) REFERENCES Plantas(PlantaId),
-        FOREIGN KEY (AreaId) REFERENCES Areas(AreaId),
-        FOREIGN KEY (CategoriaId) REFERENCES Categorias(CategoriaId),
-        FOREIGN KEY (SubcategoriaId) REFERENCES Subcategorias(SubcategoriaId),
-        FOREIGN KEY (PrioridadId) REFERENCES Prioridades(PrioridadId),
-        FOREIGN KEY (EstadoId) REFERENCES Estados(EstadoId)
-    )
-    """)
-
-    # Migración liviana para DB existentes: agregar columnas nuevas si faltan
-    cursor.execute("PRAGMA table_info(Tickets)")
-    ticket_cols = {row[1] for row in cursor.fetchall()}
-    ticket_column_migrations = {
-        "SuggestedAssigneeId": "INTEGER",
-        "AssigneeId": "INTEGER",
-        "ConfidenceScore": "REAL",
-        "OriginalPrompt": "TEXT",
-        "AiProcessingTime": "INTEGER",
-        "ConversationId": "TEXT",
-        "NeedByAt": "DATETIME",
-    }
-    for col_name, col_type in ticket_column_migrations.items():
-        if col_name not in ticket_cols:
-            cursor.execute(f"ALTER TABLE Tickets ADD COLUMN {col_name} {col_type}")
-
-    # Datos Semilla - Importar desde seed_data.py
-    from seed_data import (
-        ESTADOS,
-        PRIORIDADES,
-        DIVISIONES,
-        PLANTAS,
-        CATEGORIAS,
-        SUBCATEGORIAS,
-        AREAS,
-        USERS,
-    )
-
-    # Insertar datos básicos (sin foreign keys)
-    for estado in ESTADOS:
-        cursor.execute("INSERT OR IGNORE INTO Estados (Nombre) VALUES (?)", estado)
-
-    for prio in PRIORIDADES:
-        cursor.execute(
-            "INSERT OR IGNORE INTO Prioridades (Nombre, Nivel) VALUES (?, ?)", prio
-        )
-
-    for division in DIVISIONES:
-        cursor.execute("INSERT OR IGNORE INTO Divisiones (Nombre) VALUES (?)", division)
-
-    for planta in PLANTAS:
-        cursor.execute("INSERT OR IGNORE INTO Plantas (Nombre) VALUES (?)", planta)
-
-    for categoria in CATEGORIAS:
-        cursor.execute(
-            "INSERT OR IGNORE INTO Categorias (Nombre) VALUES (?)", categoria
-        )
-
-    for user in USERS:
-        cursor.execute(
-            "INSERT OR IGNORE INTO Users (Username, Email, Role) VALUES (?, ?, ?)", user
-        )
-
-    conn.commit()
-
-    # Insertar subcategorías (requiere resolver CategoriaId)
-    for subcat_nombre, categoria_nombre in SUBCATEGORIAS:
-        cursor.execute(
-            "SELECT CategoriaId FROM Categorias WHERE Nombre = ?", (categoria_nombre,)
-        )
-        cat_row = cursor.fetchone()
-        if cat_row:
-            cursor.execute(
-                "INSERT OR IGNORE INTO Subcategorias (Nombre, CategoriaId) VALUES (?, ?)",
-                (subcat_nombre, cat_row[0]),
-            )
-
-    # Insertar áreas (requiere resolver DivisionId)
-    for area_nombre, division_nombre in AREAS:
-        cursor.execute(
-            "SELECT DivisionId FROM Divisiones WHERE Nombre = ?", (division_nombre,)
-        )
-        div_row = cursor.fetchone()
-        if div_row:
-            cursor.execute(
-                "INSERT OR IGNORE INTO Areas (Nombre, DivisionId) VALUES (?, ?)",
-                (area_nombre, div_row[0]),
-            )
-
-    conn.commit()
-    conn.close()
+    # La app usa Azure SQL de forma obligatoria.
+    # Validamos conexión y existencia de tablas clave al arrancar.
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT TOP 1 UserId FROM {qname('Users')}")
+        cursor.execute(f"SELECT TOP 1 TicketId FROM {qname('Tickets')}")
+    finally:
+        conn.close()
 
 
 # ==========================================
@@ -572,7 +532,7 @@ class TicketAssistant:
         1. Si el mensaje es un saludo, despedida, agradecimiento o charla trivial (ej: "hola", "gracias", "ok"), define:
            - "intencion": "social"
            - "respuesta_social": Una respuesta amigable y breve que invite a reportar un problema.
-        2. Si el mensaje describe un problema, avería o solicitud técnica, define:
+        2. Si el mensaje describe un problema, avería, tarea operativa o solicitud de gestión vinculada al trabajo, define:
            - "intencion": "crear_ticket"
         3. En cualquier otro caso:
            - "intencion": "desconocido"
@@ -588,12 +548,16 @@ class TicketAssistant:
         - prioridad: Prioridad inferida (Alta, Media, Baja, Crítica o null)
         - usuario_sugerido: username sugerido (string o null)
         - fecha_necesidad: fecha esperada de resolución en lenguaje natural o formato fecha (string o null)
+        - Si la fecha es inferible (ej: "hoy", "próximo lunes"), devuelve fecha_necesidad en formato YYYY-MM-DD.
 
         ### Catálogos disponibles para validar:
         Plantas: {", ".join(catalogs.get("plantas", []))}
+        Divisiones: {", ".join(catalogs.get("divisiones", []))}
         Áreas: {", ".join(catalogs.get("areas", []))}
         Categorías: {", ".join(catalogs.get("categorias", []))}
+        Subcategorías: {", ".join(catalogs.get("subcategorias", []))}
         Prioridades: {", ".join(catalogs.get("prioridades", []))}
+        Usuarios (username): {", ".join(catalogs.get("usuarios", []))}
         
         Contexto Actual: {json.dumps(context_json)}
         Mensaje: "{user_input}"
@@ -698,7 +662,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-init_db()
+try:
+    init_db()
+except Exception as db_err:
+    st.error(f"❌ Error de conexión a Azure SQL: {db_err}")
+    st.stop()
 
 if "master_data" not in st.session_state:
     st.session_state.master_data = load_master_data()
@@ -734,6 +702,7 @@ if not api_key:
 # Sidebar
 with st.sidebar:
     st.title("⚙️ Configuración")
+    st.info(f"Base de datos: Azure SQL ({get_master_schema()})")
     model_name = st.selectbox(
         "Modelo", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
     )
@@ -808,22 +777,23 @@ if st.session_state.show_confirm_buttons:
             )
             score = compute_completeness_score(d, ids)
 
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_azure_master_connection()
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT UserId FROM Users WHERE Active = 1 ORDER BY UserId LIMIT 1"
+                f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE Active = 1 ORDER BY UserId"
             )
             requester = cursor.fetchone()
             requester_id = requester[0] if requester else None
+            tickets_table = qname("Tickets")
 
             cursor.execute(
-                """
-                INSERT INTO Tickets (
+                f"""
+                INSERT INTO {tickets_table} (
                     Title, Description, RequesterId, SuggestedAssigneeId, AssigneeId,
                     PlantaId, AreaId, CategoriaId, SubcategoriaId, PrioridadId, EstadoId,
                     ConfidenceScore, OriginalPrompt, AiProcessingTime, ConversationId, NeedByAt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) OUTPUT INSERTED.TicketId VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     d.get("titulo") or "Ticket sin titulo",
@@ -844,8 +814,9 @@ if st.session_state.show_confirm_buttons:
                     d.get("fecha_necesidad_resuelta"),
                 ),
             )
-
-            t_id = cursor.lastrowid
+            # SQL Server: recuperamos el TicketId desde OUTPUT INSERTED
+            ticket_row = cursor.fetchone()
+            t_id = ticket_row[0] if ticket_row else None
             conn.commit()
             conn.close()
 
@@ -860,46 +831,25 @@ if st.session_state.show_confirm_buttons:
                     "No pude normalizar la Fecha de Necesidad. Se guardó sin fecha normalizada."
                 )
 
-            warning_text = ""
+            warning_text = "<b>Observaciones:</b> Sin observaciones."
             if warnings:
-                warning_text = "\n\n<b>Observaciones:</b>\n- " + "\n- ".join(warnings)
-
-            final_descripcion = d.get("descripcion") or "Sin descripción detallada"
-            final_planta = d.get("planta") or "No especificada"
-            final_division = d.get("division") or "No especificada"
-            final_area = d.get("area") or "No especificada"
-            final_categoria = d.get("categoria") or "No especificada"
-            final_subcategoria = d.get("subcategoria") or "No especificada"
-            final_prioridad = d.get("prioridad") or "Media (Por defecto)"
-            final_usuario = d.get("usuario_sugerido") or "No especificado"
-            if d.get("usuario_sugerido_resuelto"):
-                ur = d["usuario_sugerido_resuelto"]
-                final_usuario = (
-                    f"{format_full_name_from_username(ur.get('username'))} "
-                    f"({ur.get('username')}) - {ur.get('email')}"
-                )
-            final_fecha = d.get("fecha_necesidad") or "No especificada"
-            final_fecha_norm = d.get("fecha_necesidad_resuelta") or "No normalizada"
+                warning_lines = "<br>".join([f"- {w}" for w in warnings])
+                warning_text = f"<b>Observaciones:</b><br>{warning_lines}"
 
             st.session_state.messages.append(
                 {
                     "role": "assistant",
                     "content": (
-                        f"✅ ¡Ticket #{t_id} creado con éxito! "
+                        f"✅ ¡Ticket #{t_id} creado con éxito!"
                         f"<br><b>Completitud:</b> {score.upper()}"
-                        f"\n<b>Título:</b> {d.get('titulo') or 'Ticket sin titulo'}"
-                        f"\n<b>Descripción:</b> {final_descripcion}"
-                        f"\n<b>Ubicación (Planta):</b> {final_planta}"
-                        f"\n<b>División:</b> {final_division}"
-                        f"\n<b>Área:</b> {final_area}"
-                        f"\n<b>Categoría:</b> {final_categoria}"
-                        f"\n<b>Subcategoría:</b> {final_subcategoria}"
-                        f"\n<b>Prioridad:</b> {final_prioridad}"
-                        f"\n<b>Usuario sugerido:</b> {final_usuario}"
-                        f"\n<b>Fecha de necesidad:</b> {final_fecha}"
-                        f"\n<b>Fecha de necesidad normalizada:</b> {final_fecha_norm}"
-                        f"{warning_text}"
+                        f"<br>{warning_text}"
                     ),
+                }
+            )
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": "Listo. Ya podés cargar un nuevo ticket o tarea cuando quieras.",
                 }
             )
             # Reset
@@ -969,16 +919,16 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     resolved_user
                 )
 
-                # 2. Generar mensaje de revisión o bloqueo
-                bot_res, bloqueante = assistant.generate_review_message(
-                    st.session_state.ticket_draft
-                )
-
                 parsed_need = safe_parse_datetime(
                     st.session_state.ticket_draft.get("fecha_necesidad")
                 )
                 st.session_state.ticket_draft["fecha_necesidad_resuelta"] = (
                     parsed_need.strftime("%Y-%m-%d %H:%M:%S") if parsed_need else None
+                )
+
+                # 2. Generar mensaje de revisión o bloqueo (ya con fecha normalizada)
+                bot_res, bloqueante = assistant.generate_review_message(
+                    st.session_state.ticket_draft
                 )
 
                 if not bloqueante:
@@ -997,16 +947,17 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
 with debug_expander:
     st.write("**Borrador Actual:**", st.session_state.ticket_draft)
     st.write("**Última Respuesta JSON IA:**", st.session_state.last_ai_res)
-    st.write("**Prompt Enviado:**", st.session_state.last_prompt)
+    st.write("**Prompt Enviado:**")
+    st.code(st.session_state.last_prompt or "", language="text")
 
 # Panel izquierdo (sidebar): tabla de tickets al final
 with st.sidebar:
     st.divider()
     st.subheader("Tickets Cargados")
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_azure_master_connection()
         tickets_df = pd.read_sql_query(
-            """
+            f"""
             SELECT
                 t.TicketId AS Ticket,
                 t.Title AS Titulo,
@@ -1016,12 +967,12 @@ with st.sidebar:
                 pr.Nombre AS Prioridad,
                 e.Nombre AS Estado,
                 t.NeedByAt AS FechaNecesidad
-            FROM Tickets t
-            LEFT JOIN Plantas p ON t.PlantaId = p.PlantaId
-            LEFT JOIN Areas a ON t.AreaId = a.AreaId
-            LEFT JOIN Categorias c ON t.CategoriaId = c.CategoriaId
-            LEFT JOIN Prioridades pr ON t.PrioridadId = pr.PrioridadId
-            LEFT JOIN Estados e ON t.EstadoId = e.EstadoId
+            FROM {qname('Tickets')} t
+            LEFT JOIN {qname('Plantas')} p ON t.PlantaId = p.PlantaId
+            LEFT JOIN {qname('Areas')} a ON t.AreaId = a.AreaId
+            LEFT JOIN {qname('Categorias')} c ON t.CategoriaId = c.CategoriaId
+            LEFT JOIN {qname('Prioridades')} pr ON t.PrioridadId = pr.PrioridadId
+            LEFT JOIN {qname('Estados')} e ON t.EstadoId = e.EstadoId
             ORDER BY t.TicketId DESC
             """,
             conn,

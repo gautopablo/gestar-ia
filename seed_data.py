@@ -101,23 +101,31 @@ AREAS = [
 
 # Usuarios (Username, Email, Role)
 USERS = [
-    ("juan_perez", "juan@empresa.com", "Solicitante"),
-    ("tecnico_1", "soporte@empresa.com", "Tecnico"),
-    ("guillen_lucas", "guillen@taranto.com.ar", "Tecnico"),
-    ("ranea_mauricio", "ranea@taranto.com.ar", "Tecnico"),
-    ("garcia_martin", "garcia@taranto.com.ar", "Supervisor"),
-    ("lopez_ana", "lopez@taranto.com.ar", "Solicitante"),
-    ("rodriguez_carlos", "rodriguez@taranto.com.ar", "Tecnico"),
-    ("fernandez_maria", "fernandez@taranto.com.ar", "Solicitante"),
+    ("gauto_pablo", "gautop@taranto.com.ar", "Administracion"),
+    ("ranea_mauricio", "ranea@taranto.com.ar", "Administracion"),
+    ("firmapaz_alfredo", "firmapaz@taranto.com.ar", "Analista"),
+    ("leiva_mauricio", "leivam@taranto.com.ar", "Analista"),
+    ("riveros_emanuel", "riveroe@taranto.com.ar", "Analista"),
+    ("parra_francisco", "parraf@taranto.com.ar", "Analista"),
+    ("vazquez_pilar", "vazquezp@taranto.com.ar", "Analista"),
+    ("guillen_lucas", "guillen@taranto.com.ar", "Analista"),
+    ("vera_juan", "veraj@taranto.com.ar", "Analista"),
+    ("brochero_joaquin", "brocheroo@taranto.com.ar", "Analista"),
+    ("cane_alejandro", "cane@taranto.com.ar", "Director"),
 ]
 
 # Mapeo de usuarios a áreas y divisiones (Username, AreaNombre, DivisionNombre)
 # Este mapeo se usa para inferir área/división cuando se sugiere un usuario
 USER_AREA_DIVISION_MAP = {
-    "guillen_lucas": {"area": "Mantenimiento", "division": "Forja"},
-    "ranea_mauricio": {"area": "Prensa 1", "division": "Forja"},
-    "garcia_martin": {"area": "Producción", "division": "Forja"},
-    "lopez_ana": {"area": "Sellado Línea 1", "division": "Sellado"},
-    "rodriguez_carlos": {"area": "Mantenimiento", "division": "Sellado"},
-    "fernandez_maria": {"area": "Logística", "division": "Distribución"},
+    "gauto_pablo": {"area": "Ing. Procesos", "division": None},
+    "ranea_mauricio": {"area": "Ing. Procesos", "division": None},
+    "firmapaz_alfredo": {"area": "Ing. Procesos", "division": None},
+    "leiva_mauricio": {"area": "Ing. Procesos", "division": None},
+    "riveros_emanuel": {"area": "Ing. Procesos", "division": None},
+    "parra_francisco": {"area": "Ing. Procesos", "division": None},
+    "vazquez_pilar": {"area": "Sistemas", "division": None},
+    "guillen_lucas": {"area": "Ing. Procesos", "division": None},
+    "vera_juan": {"area": "GICASH", "division": None},
+    "brochero_joaquin": {"area": "Ing. Procesos", "division": None},
+    "cane_alejandro": {"area": "Direccion D", "division": None},
 }
