@@ -463,11 +463,21 @@ def init_db():
     )
     """)
 
-    # Migración liviana para DB existentes: agregar NeedByAt si falta
+    # Migración liviana para DB existentes: agregar columnas nuevas si faltan
     cursor.execute("PRAGMA table_info(Tickets)")
     ticket_cols = {row[1] for row in cursor.fetchall()}
-    if "NeedByAt" not in ticket_cols:
-        cursor.execute("ALTER TABLE Tickets ADD COLUMN NeedByAt DATETIME")
+    ticket_column_migrations = {
+        "SuggestedAssigneeId": "INTEGER",
+        "AssigneeId": "INTEGER",
+        "ConfidenceScore": "REAL",
+        "OriginalPrompt": "TEXT",
+        "AiProcessingTime": "INTEGER",
+        "ConversationId": "TEXT",
+        "NeedByAt": "DATETIME",
+    }
+    for col_name, col_type in ticket_column_migrations.items():
+        if col_name not in ticket_cols:
+            cursor.execute(f"ALTER TABLE Tickets ADD COLUMN {col_name} {col_type}")
 
     # Datos Semilla - Importar desde seed_data.py
     from seed_data import (
