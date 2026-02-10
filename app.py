@@ -67,6 +67,26 @@ def get_base64_image(image_path):
         return ""
 
 
+def get_users_by_id(master_data):
+    return {u["id"]: u for u in master_data.get("usuarios", []) if u.get("id") is not None}
+
+
+def ensure_session_user(master_data):
+    users = master_data.get("usuarios", [])
+    if not users:
+        raise RuntimeError("No hay usuarios activos en la base para iniciar sesión.")
+    users_by_id = get_users_by_id(master_data)
+    current_id = st.session_state.get("current_user_id")
+    if current_id not in users_by_id:
+        st.session_state.current_user_id = users[0]["id"]
+
+
+def get_session_user(master_data):
+    users_by_id = get_users_by_id(master_data)
+    current_id = st.session_state.get("current_user_id")
+    return users_by_id.get(current_id)
+
+
 def safe_parse_datetime(value):
     if not value:
         return None
@@ -566,33 +586,15 @@ def init_db():
         conn.close()
 
 
-def _find_user_id_by_username(username):
-    if not username:
-        return None
-    conn = get_azure_master_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE LOWER(Username) = LOWER(?)",
-            (username,),
-        )
-        row = cursor.fetchone()
-        return row[0] if row else None
-    finally:
-        conn.close()
-
-
 def insert_ticket_record(draft, ids, metadata):
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
         requester_id = metadata.get("requester_id")
         if requester_id is None:
-            cursor.execute(
-                f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE Active = 1 ORDER BY UserId"
+            raise RuntimeError(
+                "No hay usuario de sesión para registrar el solicitante del ticket."
             )
-            requester = cursor.fetchone()
-            requester_id = requester[0] if requester else None
 
         cursor.execute(
             f"""
@@ -713,7 +715,7 @@ def fetch_ticket_for_edit(ticket_id):
         conn.close()
 
 
-def update_ticket_from_form(ticket_id, updates):
+def update_ticket_from_form(ticket_id, updates, actor_user_id):
     if not updates:
         return
 
@@ -820,10 +822,11 @@ def update_ticket_from_form(ticket_id, updates):
             cursor.execute(
                 f"""
                 INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
-                VALUES (?, NULL, 0, ?, ?, ?)
+                VALUES (?, ?, 0, ?, ?, ?)
                 """,
                 (
                     ticket_id,
+                    actor_user_id,
                     field_alias.get(field_name, field_name),
                     None if old_disp is None else str(old_disp),
                     None if new_disp is None else str(new_disp),
@@ -1029,7 +1032,7 @@ st.markdown(
     """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Raleway:wght@600;700&display=swap');
-    .stApp { background-color: #f5f6f8; }
+    .stApp { background-color: #ffffff; }
     html, body, [class*="css"] {
         font-family: "Lato", sans-serif;
         color: #444;
@@ -1048,6 +1051,52 @@ st.markdown(
         padding: 0.75rem 1rem;
         margin-bottom: 1rem;
         box-shadow: 0 2px 15px rgba(0,0,0,0.04);
+    }
+    [data-testid="stVerticalBlock"]:has(.taranto-header-marker) {
+        background: #ffffff;
+        border-bottom: 3px solid #d52e25;
+        border-radius: 10px;
+        padding: 0.75rem 1rem 0.4rem 1rem;
+        margin-bottom: 0.7rem;
+        box-shadow: 0 2px 15px rgba(0,0,0,0.04);
+    }
+    .taranto-header-marker {
+        display: none;
+    }
+    /* Debug visual de paneles (prueba temporal) */
+    [data-testid="stVerticalBlock"]:has(.dbg-panel-header) {
+        background: #ffffff !important;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 0.5rem;
+    }
+    [data-testid="stVerticalBlock"]:has(.dbg-panel-nav) {
+        background: #ffffff !important;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 0.5rem;
+        margin-top: 0.4rem;
+    }
+    [data-testid="stVerticalBlock"]:has(.dbg-panel-content) {
+        background: #f3f4f6 !important;
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        padding: 0.5rem;
+        margin-top: 0.4rem;
+        min-height: calc(100dvh - 290px);
+    }
+    [data-testid="stVerticalBlock"]:has(.dbg-panel-inner) {
+        background: #f3f4f6 !important;
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        padding: 0.5rem;
+        margin-top: 0.4rem;
+    }
+    .dbg-panel-header,
+    .dbg-panel-nav,
+    .dbg-panel-content,
+    .dbg-panel-inner {
+        display: none;
     }
     .taranto-logo {
         color: #156099;
@@ -1160,8 +1209,15 @@ st.markdown(
         color: #6b7785 !important;
         opacity: 1 !important;
     }
+    [data-testid="stBottomBlockContainer"] {
+        background: #dcf8c6 !important;
+        border-top: 1px solid #34b233;
+    }
     header { visibility: hidden; }
     footer { visibility: hidden; }
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
     .top-meta {
         text-align: right;
         color: #156099;
@@ -1194,6 +1250,12 @@ else:
         st.session_state.master_indexes = build_master_indexes(
             st.session_state.master_data
         )
+
+try:
+    ensure_session_user(st.session_state.master_data)
+except Exception as user_err:
+    st.error(f"❌ Error de usuarios de sesión: {user_err}")
+    st.stop()
 
 # Cargar API Key: prioridad Streamlit Secrets (deploy), fallback .env (local)
 try:
@@ -1293,11 +1355,12 @@ def render_chat_mode(api_key, model_name, debug_expander):
                     need_by_dt.strftime("%Y-%m-%d %H:%M:%S") if need_by_dt else None
                 )
                 score = compute_completeness_score(d, ids)
+                session_user = get_session_user(st.session_state.master_data)
                 t_id = insert_ticket_record(
                     d,
                     ids,
                     {
-                        "requester_id": None,
+                        "requester_id": session_user["id"] if session_user else None,
                         "assignee_id": None,
                         "confidence_score": st.session_state.last_ai_res.get(
                             "confidence", 0.8
@@ -1360,6 +1423,14 @@ def render_chat_mode(api_key, model_name, debug_expander):
                 st.session_state.show_confirm_buttons = False
                 st.rerun()
 
+    with debug_expander:
+        st.write("**Borrador Actual:**", st.session_state.ticket_draft)
+        st.write("**Última Respuesta JSON IA:**", st.session_state.last_ai_res)
+        st.write("**Prompt Enviado:**")
+        st.code(st.session_state.last_prompt or "", language="text")
+
+
+def handle_chat_input_and_processing(api_key, model_name):
     if prompt := st.chat_input("Escribe tu solicitud/tarea aquí..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.session_state.show_confirm_buttons = False
@@ -1431,14 +1502,9 @@ def render_chat_mode(api_key, model_name, debug_expander):
             else:
                 st.sidebar.error(f"Error de API: {ai_res['error']}")
 
-    with debug_expander:
-        st.write("**Borrador Actual:**", st.session_state.ticket_draft)
-        st.write("**Última Respuesta JSON IA:**", st.session_state.last_ai_res)
-        st.write("**Prompt Enviado:**")
-        st.code(st.session_state.last_prompt or "", language="text")
-
 
 def render_form_mode():
+    st.markdown("<div class='dbg-panel-inner'></div>", unsafe_allow_html=True)
     st.subheader("Modo Formulario")
     ticket_tab, tray_tab = st.tabs(["Nuevo Ticket", "Bandeja y Edicion"])
 
@@ -1472,7 +1538,6 @@ def render_form_mode():
                 user_sel = st.selectbox("Usuario sugerido", user_opt)
 
             fecha_sel = st.date_input("Fecha de necesidad", format="DD/MM/YYYY")
-            requester_user = st.selectbox("Solicitante", user_opt, index=1 if len(user_opt) > 1 else 0)
             submitted = st.form_submit_button("Crear Ticket")
 
         if submitted:
@@ -1503,12 +1568,12 @@ def render_form_mode():
                 ids, warns = map_entities_to_ids(
                     draft, st.session_state.master_indexes, st.session_state.master_data
                 )
-                requester_id = _find_user_id_by_username(requester_user)
+                session_user = get_session_user(st.session_state.master_data)
                 ticket_id = insert_ticket_record(
                     draft,
                     ids,
                     {
-                        "requester_id": requester_id,
+                        "requester_id": session_user["id"] if session_user else None,
                         "assignee_id": None,
                         "confidence_score": 1.0,
                         "original_prompt": "Creado desde Modo Formulario",
@@ -1760,7 +1825,12 @@ def render_form_mode():
                 "AssigneeId": _map_label_to_id(users_by_id, assignee_edit),
                 "NeedByAt": parsed if parsed else None,
             }
-            update_ticket_from_form(selected_ticket_id, updates)
+            session_user = get_session_user(st.session_state.master_data)
+            update_ticket_from_form(
+                selected_ticket_id,
+                updates,
+                actor_user_id=session_user["id"] if session_user else None,
+            )
             st.rerun()
 
         st.markdown("#### Seguimiento / Comentarios")
@@ -1780,7 +1850,12 @@ def render_form_mode():
             cmt = st.text_area("Nuevo comentario", key="form_comment_text")
             if st.button("Agregar comentario", key="form_add_comment"):
                 if cmt.strip():
-                    add_ticket_comment(selected_ticket_id, cmt.strip())
+                    session_user = get_session_user(st.session_state.master_data)
+                    add_ticket_comment(
+                        selected_ticket_id,
+                        cmt.strip(),
+                        user_id=session_user["id"] if session_user else None,
+                    )
                     st.success("Comentario agregado.")
                     st.rerun()
                 else:
@@ -1789,51 +1864,74 @@ def render_form_mode():
             st.error(f"Error de logs: {e}")
 
 
-st.markdown(
-    """
-    <div class="taranto-header">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
-            <div style="min-width:160px;">"""
-    + (
-        f'<img src="data:image/png;base64,{taranto_logo_b64}" style="height:48px; width:auto;" alt="Taranto">'
-        if taranto_logo_b64
-        else '<p class="taranto-logo">TARANTO</p>'
-    )
-    + """</div>
-            <div style="flex:1;">
-                <h1 class="taranto-title">GESTAR <span class="taranto-subtitle">| Gestión de Solicitudes</span></h1>
-            </div>
-            <div style="min-width:220px;" class="top-meta">Azure SQL · Esquema: """
-    + get_master_schema()
-    + """</div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+session_users = st.session_state.master_data.get("usuarios", [])
+session_user = get_session_user(st.session_state.master_data)
+session_labels = [u["username"] for u in session_users]
+current_label = session_user["username"] if session_user else None
 
-nav1, nav2, _ = st.columns([1, 1, 4], gap="small")
-with nav1:
-    cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
-    st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-    if st.button("CHAT IA", key="main_nav_chat", use_container_width=True):
-        st.session_state.ui_section = "CHAT IA"
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-with nav2:
-    cls = "active-nav" if st.session_state.ui_section == "MODO FORMULARIO" else ""
-    st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-    if st.button("MODO FORMULARIO", key="main_nav_form", use_container_width=True):
-        st.session_state.ui_section = "MODO FORMULARIO"
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+with st.container():
+    st.markdown("<div class='dbg-panel-header'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='taranto-header-marker'></div>", unsafe_allow_html=True)
+    head1, head2, head3 = st.columns([1.4, 3.2, 1.8], vertical_alignment="center")
+    with head1:
+        if taranto_logo_b64:
+            st.markdown(
+                f'<img src="data:image/png;base64,{taranto_logo_b64}" style="height:48px; width:auto;" alt="Taranto">',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown("<p class='taranto-logo'>TARANTO</p>", unsafe_allow_html=True)
+    with head2:
+        st.markdown(
+            "<h1 class='taranto-title'>GESTAR <span class='taranto-subtitle'>| Gestión de Solicitudes</span></h1>",
+            unsafe_allow_html=True,
+        )
+    with head3:
+        if session_labels:
+            idx = session_labels.index(current_label) if current_label in session_labels else 0
+            selected_session_label = st.selectbox(
+                "Usuario de sesión",
+                session_labels,
+                index=idx,
+                key="header_session_user",
+            )
+            if selected_session_label != current_label:
+                new_user = next(
+                    (u for u in session_users if u["username"] == selected_session_label),
+                    None,
+                )
+                if new_user:
+                    st.session_state.current_user_id = new_user["id"]
+                    st.rerun()
 
-st.markdown("<hr style='border: 1px solid #d52e25; margin-top:0.2rem; margin-bottom:0.9rem;'>", unsafe_allow_html=True)
+with st.container():
+    st.markdown("<div class='dbg-panel-nav'></div>", unsafe_allow_html=True)
+    nav1, nav2, _ = st.columns([1, 1, 4], gap="small")
+    with nav1:
+        cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
+        st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+        if st.button("CHAT IA", key="main_nav_chat", use_container_width=True):
+            st.session_state.ui_section = "CHAT IA"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with nav2:
+        cls = "active-nav" if st.session_state.ui_section == "MODO FORMULARIO" else ""
+        st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+        if st.button("MODO FORMULARIO", key="main_nav_form", use_container_width=True):
+            st.session_state.ui_section = "MODO FORMULARIO"
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<hr style='border: 1px solid #d52e25; margin-top:0.2rem; margin-bottom:0.9rem;'>", unsafe_allow_html=True)
+
+with st.container():
+    st.markdown("<div class='dbg-panel-content'></div>", unsafe_allow_html=True)
+    if st.session_state.ui_section == "CHAT IA":
+        render_chat_mode(api_key, model_name, debug_expander)
+    else:
+        render_form_mode()
 
 if st.session_state.ui_section == "CHAT IA":
-    render_chat_mode(api_key, model_name, debug_expander)
-else:
-    render_form_mode()
+    handle_chat_input_and_processing(api_key, model_name)
 
 # Panel izquierdo (sidebar): tabla de tickets al final
 with st.sidebar:
