@@ -1625,79 +1625,100 @@ def render_form_mode():
             prio_by_id = {p["id"]: p["nombre"] for p in prioridades}
             est_by_id = {e["id"]: e["nombre"] for e in estados}
             users_by_id = {u["id"]: u["username"] for u in users}
+            SIN_DEFINIR = "Sin definir"
+
+            def _build_select_options(by_id, current_id):
+                labels = [SIN_DEFINIR] + list(by_id.values())
+                current_label = by_id.get(current_id, SIN_DEFINIR)
+                index = labels.index(current_label) if current_label in labels else 0
+                return labels, index
+
+            def _map_label_to_id(by_id, label):
+                if label == SIN_DEFINIR:
+                    return None
+                return next((k for k, v in by_id.items() if v == label), None)
+
+            def _label_with_warning(base_label, key_name, by_id, current_id):
+                current_value = st.session_state.get(
+                    key_name, by_id.get(current_id, SIN_DEFINIR)
+                )
+                return f"{base_label} ⚠️" if current_value == SIN_DEFINIR else base_label
 
             c1, c2, c3 = st.columns(3)
             with c1:
-                planta_edit = st.selectbox(
-                    "Planta",
-                    list(plantas_by_id.values()),
-                    index=max(
-                        list(plantas_by_id.keys()).index(t.get("PlantaId"))
-                        if t.get("PlantaId") in plantas_by_id
-                        else 0,
-                        0,
-                    ),
+                planta_key = f"edit_planta_{selected_ticket_id}"
+                planta_opts, planta_idx = _build_select_options(
+                    plantas_by_id, t.get("PlantaId")
                 )
+                planta_edit = st.selectbox(
+                    _label_with_warning("Planta", planta_key, plantas_by_id, t.get("PlantaId")),
+                    planta_opts,
+                    index=planta_idx,
+                    key=planta_key,
+                )
+
+                area_key = f"edit_area_{selected_ticket_id}"
+                area_opts, area_idx = _build_select_options(areas_by_id, t.get("AreaId"))
                 area_edit = st.selectbox(
-                    "Area",
-                    list(areas_by_id.values()),
-                    index=max(
-                        list(areas_by_id.keys()).index(t.get("AreaId"))
-                        if t.get("AreaId") in areas_by_id
-                        else 0,
-                        0,
-                    ),
+                    _label_with_warning("Area", area_key, areas_by_id, t.get("AreaId")),
+                    area_opts,
+                    index=area_idx,
+                    key=area_key,
                 )
             with c2:
+                cat_key = f"edit_cat_{selected_ticket_id}"
+                cat_opts, cat_idx = _build_select_options(
+                    cats_by_id, t.get("CategoriaId")
+                )
                 cat_edit = st.selectbox(
-                    "Categoria",
-                    list(cats_by_id.values()),
-                    index=max(
-                        list(cats_by_id.keys()).index(t.get("CategoriaId"))
-                        if t.get("CategoriaId") in cats_by_id
-                        else 0,
-                        0,
-                    ),
+                    _label_with_warning("Categoria", cat_key, cats_by_id, t.get("CategoriaId")),
+                    cat_opts,
+                    index=cat_idx,
+                    key=cat_key,
+                )
+
+                subcat_key = f"edit_subcat_{selected_ticket_id}"
+                subcat_opts, subcat_idx = _build_select_options(
+                    subcats_by_id, t.get("SubcategoriaId")
                 )
                 subcat_edit = st.selectbox(
-                    "Subcategoria",
-                    list(subcats_by_id.values()),
-                    index=max(
-                        list(subcats_by_id.keys()).index(t.get("SubcategoriaId"))
-                        if t.get("SubcategoriaId") in subcats_by_id
-                        else 0,
-                        0,
-                    ),
+                    _label_with_warning("Subcategoria", subcat_key, subcats_by_id, t.get("SubcategoriaId")),
+                    subcat_opts,
+                    index=subcat_idx,
+                    key=subcat_key,
                 )
             with c3:
+                prio_key = f"edit_prio_{selected_ticket_id}"
+                prio_opts, prio_idx = _build_select_options(
+                    prio_by_id, t.get("PrioridadId")
+                )
                 prio_edit = st.selectbox(
-                    "Prioridad",
-                    list(prio_by_id.values()),
-                    index=max(
-                        list(prio_by_id.keys()).index(t.get("PrioridadId"))
-                        if t.get("PrioridadId") in prio_by_id
-                        else 0,
-                        0,
-                    ),
+                    _label_with_warning("Prioridad", prio_key, prio_by_id, t.get("PrioridadId")),
+                    prio_opts,
+                    index=prio_idx,
+                    key=prio_key,
+                )
+
+                estado_key = f"edit_estado_{selected_ticket_id}"
+                estado_opts, estado_idx = _build_select_options(
+                    est_by_id, t.get("EstadoId")
                 )
                 estado_edit = st.selectbox(
-                    "Estado",
-                    list(est_by_id.values()),
-                    index=max(
-                        list(est_by_id.keys()).index(t.get("EstadoId"))
-                        if t.get("EstadoId") in est_by_id
-                        else 0,
-                        0,
-                    ),
+                    _label_with_warning("Estado", estado_key, est_by_id, t.get("EstadoId")),
+                    estado_opts,
+                    index=estado_idx,
+                    key=estado_key,
                 )
-                assignee_opt = [""] + list(users_by_id.values())
-                current_assignee = users_by_id.get(t.get("AssigneeId"), "")
+
+                assignee_key = f"edit_assignee_{selected_ticket_id}"
+                assignee_opt, assignee_idx = _build_select_options(
+                    users_by_id, t.get("AssigneeId")
+                )
                 assignee_edit = st.selectbox(
-                    "Asignado a",
+                    _label_with_warning("Asignado a", assignee_key, users_by_id, t.get("AssigneeId")),
                     assignee_opt,
-                    index=assignee_opt.index(current_assignee)
-                    if current_assignee in assignee_opt
-                    else 0,
+                    index=assignee_idx,
+                    key=assignee_key,
                 )
 
             has_need_by = t.get("NeedByAt") is not None
@@ -1730,34 +1751,13 @@ def render_form_mode():
             updates = {
                 "Title": title_new,
                 "Description": desc_new,
-                "PlantaId": next(
-                    (pid for pid, name in plantas_by_id.items() if name == planta_edit),
-                    None,
-                ),
-                "AreaId": next(
-                    (aid for aid, name in areas_by_id.items() if name == area_edit),
-                    None,
-                ),
-                "CategoriaId": next(
-                    (cid for cid, name in cats_by_id.items() if name == cat_edit),
-                    None,
-                ),
-                "SubcategoriaId": next(
-                    (sid for sid, name in subcats_by_id.items() if name == subcat_edit),
-                    None,
-                ),
-                "PrioridadId": next(
-                    (pid for pid, name in prio_by_id.items() if name == prio_edit),
-                    None,
-                ),
-                "EstadoId": next(
-                    (eid for eid, name in est_by_id.items() if name == estado_edit),
-                    None,
-                ),
-                "AssigneeId": next(
-                    (uid for uid, name in users_by_id.items() if name == assignee_edit),
-                    None,
-                ),
+                "PlantaId": _map_label_to_id(plantas_by_id, planta_edit),
+                "AreaId": _map_label_to_id(areas_by_id, area_edit),
+                "CategoriaId": _map_label_to_id(cats_by_id, cat_edit),
+                "SubcategoriaId": _map_label_to_id(subcats_by_id, subcat_edit),
+                "PrioridadId": _map_label_to_id(prio_by_id, prio_edit),
+                "EstadoId": _map_label_to_id(est_by_id, estado_edit),
+                "AssigneeId": _map_label_to_id(users_by_id, assignee_edit),
                 "NeedByAt": parsed if parsed else None,
             }
             update_ticket_from_form(selected_ticket_id, updates)
