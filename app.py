@@ -19,9 +19,6 @@ load_dotenv()
 # 1. CONFIGURACIÓN Y BASE DE DATOS
 # ==========================================
 
-USER_AREA_DIVISION_MAP_PATH = "info/user_area_division_map.json"
-
-
 def normalize_text(value):
     if value is None:
         return ""
@@ -154,35 +151,83 @@ def safe_parse_datetime(value):
     return None
 
 
-def load_user_area_division_map():
-    if not os.path.exists(USER_AREA_DIVISION_MAP_PATH):
-        # Fallback to seed data if file doesn't exist
-        try:
-            from seed_data import USER_AREA_DIVISION_MAP
+def has_relative_date_language(value):
+    txt = normalize_text(value)
+    return bool(
+        re.search(
+            r"\b(hoy|manana|pasado manana|proximo|este|que viene|semana que viene|dentro de)\b",
+            txt,
+        )
+    )
 
-            out = {}
-            for username, mapping in USER_AREA_DIVISION_MAP.items():
-                out[normalize_text(username)] = {
-                    "area": mapping.get("area"),
-                    "division": mapping.get("division"),
-                }
-            return out
-        except ImportError:
-            return {}
+
+def load_user_area_division_map():
+    conn = get_azure_master_connection()
     try:
-        with open(USER_AREA_DIVISION_MAP_PATH, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        cursor = conn.cursor()
+        schema = get_master_schema()
+
+        col_rows = cursor.execute(
+            """
+            SELECT LOWER(COLUMN_NAME)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'Users'
+            """,
+            (schema,),
+        ).fetchall()
+        user_cols = {row[0] for row in col_rows}
+        if "username" not in user_cols:
+            return {}
+
+        has_active = "active" in user_cols
+        has_area_id = "areaid" in user_cols
+        has_division_id = "divisionid" in user_cols
+        has_area_name = "area" in user_cols
+        has_division_name = "division" in user_cols
+
+        if has_area_id:
+            active_filter = "WHERE u.Active = 1" if has_active else ""
+            sql = f"""
+                SELECT
+                    u.Username,
+                    a.Nombre AS AreaNombre,
+                    COALESCE(d_from_user.Nombre, d_from_area.Nombre) AS DivisionNombre
+                FROM {qname("Users")} u
+                LEFT JOIN {qname("Areas")} a ON u.AreaId = a.AreaId
+                LEFT JOIN {qname("Divisiones")} d_from_user
+                    ON {"u.DivisionId = d_from_user.DivisionId" if has_division_id else "1=0"}
+                LEFT JOIN {qname("Divisiones")} d_from_area ON a.DivisionId = d_from_area.DivisionId
+                {active_filter}
+            """
+            rows = cursor.execute(sql).fetchall()
+        elif has_area_name or has_division_name:
+            select_area = "u.Area" if has_area_name else "NULL"
+            select_div = "u.Division" if has_division_name else "NULL"
+            active_filter = "WHERE u.Active = 1" if has_active else ""
+            rows = cursor.execute(
+                f"""
+                SELECT
+                    u.Username,
+                    {select_area} AS AreaNombre,
+                    {select_div} AS DivisionNombre
+                FROM {qname("Users")} u
+                {active_filter}
+                """
+            ).fetchall()
+        else:
+            return {}
+
         out = {}
-        for username, mapping in raw.items():
-            if not isinstance(mapping, dict):
+        for row in rows:
+            username = row[0]
+            if not username:
                 continue
-            out[normalize_text(username)] = {
-                "area": mapping.get("area"),
-                "division": mapping.get("division"),
-            }
+            out[normalize_text(username)] = {"area": row[1], "division": row[2]}
         return out
     except Exception:
         return {}
+    finally:
+        conn.close()
 
 
 def build_master_indexes(master_data):
@@ -407,12 +452,6 @@ def map_entities_to_ids(draft, indexes, master_data):
     if division:
         mapped["division_id"] = division["id"]
 
-    area = indexes["areas_by_norm"].get(normalize_text(draft.get("area")))
-    if area:
-        mapped["area_id"] = area["id"]
-        if not mapped["division_id"]:
-            mapped["division_id"] = area["division_id"]
-
     categoria = indexes["categorias_by_norm"].get(
         normalize_text(draft.get("categoria"))
     )
@@ -430,20 +469,25 @@ def map_entities_to_ids(draft, indexes, master_data):
         mapped["suggested_assignee_id"] = usuario["id"]
         rel = indexes["user_to_area_division"].get(normalize_text(usuario["username"]))
         if rel:
-            if not mapped["area_id"] and rel.get("area_id"):
+            # Si el usuario está identificado, el área del ticket se toma desde el usuario.
+            if rel.get("area_id"):
                 mapped["area_id"] = rel["area_id"]
             if not mapped["division_id"] and rel.get("division_id"):
                 mapped["division_id"] = rel["division_id"]
-            if (
-                mapped["area_id"]
-                and rel.get("area_id")
-                and mapped["area_id"] != rel["area_id"]
-            ):
-                warnings.append(
-                    "El área indicada no coincide con el área asociada al usuario sugerido."
-                )
     elif user_warning and draft.get("usuario_sugerido"):
         warnings.append(user_warning)
+        area = indexes["areas_by_norm"].get(normalize_text(draft.get("area")))
+        if area:
+            mapped["area_id"] = area["id"]
+            if not mapped["division_id"]:
+                mapped["division_id"] = area["division_id"]
+    else:
+        # Usuario desconocido/no informado: inferimos área desde el texto del ticket.
+        area = indexes["areas_by_norm"].get(normalize_text(draft.get("area")))
+        if area:
+            mapped["area_id"] = area["id"]
+            if not mapped["division_id"]:
+                mapped["division_id"] = area["division_id"]
 
     sub_norm = normalize_text(draft.get("subcategoria"))
     if sub_norm:
@@ -926,9 +970,24 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     resolved_user
                 )
 
-                parsed_need = safe_parse_datetime(
-                    st.session_state.ticket_draft.get("fecha_necesidad")
-                )
+                draft_fecha = st.session_state.ticket_draft.get("fecha_necesidad")
+                parsed_from_draft = safe_parse_datetime(draft_fecha)
+                parsed_from_user = safe_parse_datetime(user_input)
+
+                # Priorizar fecha parseada desde el mensaje del usuario.
+                # Esto evita aceptar fechas absolutas erróneas inferidas por la IA.
+                parsed_need = parsed_from_draft
+                if parsed_from_user:
+                    parsed_need = parsed_from_user
+
+                # Si la fecha del draft viene con lenguaje relativo, no aceptar pasado.
+                if (
+                    parsed_need
+                    and has_relative_date_language(draft_fecha)
+                    and parsed_need.date() < datetime.now().date()
+                ):
+                    parsed_need = parsed_from_user
+
                 st.session_state.ticket_draft["fecha_necesidad_resuelta"] = (
                     parsed_need.strftime("%Y-%m-%d %H:%M:%S") if parsed_need else None
                 )
@@ -961,9 +1020,11 @@ with debug_expander:
 with st.sidebar:
     st.divider()
     st.subheader("Tickets Cargados")
+    conn = None
     try:
         conn = get_azure_master_connection()
-        tickets_df = pd.read_sql_query(
+        cursor = conn.cursor()
+        cursor.execute(
             f"""
             SELECT
                 t.TicketId AS Ticket,
@@ -981,13 +1042,17 @@ with st.sidebar:
             LEFT JOIN {qname('Prioridades')} pr ON t.PrioridadId = pr.PrioridadId
             LEFT JOIN {qname('Estados')} e ON t.EstadoId = e.EstadoId
             ORDER BY t.TicketId DESC
-            """,
-            conn,
+            """
         )
-        conn.close()
+        rows = cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        tickets_df = pd.DataFrame.from_records(rows, columns=columns)
         if tickets_df.empty:
             st.caption("No hay tickets cargados.")
         else:
-            st.dataframe(tickets_df, use_container_width=True, height=260)
+            st.dataframe(tickets_df, width="stretch", height=260)
     except Exception as err:
         st.caption(f"No se pudo cargar tickets: {err}")
+    finally:
+        if conn is not None:
+            conn.close()

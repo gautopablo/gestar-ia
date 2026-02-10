@@ -214,6 +214,134 @@ def subcategory_editor():
         st.rerun()
 
 
+def user_editor():
+    # Detectar si existen columnas relacionales en Users
+    cols_df = load_df(
+        f"""
+        SELECT LOWER(COLUMN_NAME) AS col
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '{SCHEMA}' AND TABLE_NAME = 'Users'
+        """
+    )
+    user_cols = set(cols_df["col"].tolist())
+    has_area_id = "areaid" in user_cols
+    has_division_id = "divisionid" in user_cols
+
+    if not has_area_id and not has_division_id:
+        df = load_df(
+            f"SELECT UserId, Username, Email, Role, Active FROM {SCHEMA}.Users ORDER BY UserId"
+        )
+        edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="users")
+        if st.button("Guardar Users", use_container_width=True):
+            save_simple_table(
+                df,
+                edited,
+                "Users",
+                "UserId",
+                ["Username", "Email", "Role", "Active"],
+                "Active",
+            )
+            st.success("Users guardados.")
+            st.rerun()
+        return
+
+    areas_df = load_df(f"SELECT AreaId, Nombre FROM {SCHEMA}.Areas WHERE Activo = 1 ORDER BY Nombre")
+    divs_df = load_df(
+        f"SELECT DivisionId, Nombre FROM {SCHEMA}.Divisiones WHERE Activo = 1 ORDER BY Nombre"
+    )
+    area_name_to_id = {r["Nombre"]: int(r["AreaId"]) for _, r in areas_df.iterrows()}
+    div_name_to_id = {r["Nombre"]: int(r["DivisionId"]) for _, r in divs_df.iterrows()}
+    area_options = [""] + list(area_name_to_id.keys())
+    division_options = [""] + list(div_name_to_id.keys())
+
+    select_area_name = "a.Nombre AS Area" if has_area_id else "NULL AS Area"
+    select_div_name = "d.Nombre AS Division" if has_division_id else "NULL AS Division"
+    select_area_id = "u.AreaId" if has_area_id else "NULL AS AreaId"
+    select_div_id = "u.DivisionId" if has_division_id else "NULL AS DivisionId"
+
+    df = load_df(
+        f"""
+        SELECT
+            u.UserId, u.Username, u.Email, u.Role, u.Active,
+            {select_area_id},
+            {select_div_id},
+            {select_area_name},
+            {select_div_name}
+        FROM {SCHEMA}.Users u
+        LEFT JOIN {SCHEMA}.Areas a ON {"u.AreaId = a.AreaId" if has_area_id else "1=0"}
+        LEFT JOIN {SCHEMA}.Divisiones d ON {"u.DivisionId = d.DivisionId" if has_division_id else "1=0"}
+        ORDER BY u.UserId
+        """
+    )
+
+    view_cols = ["UserId", "Username", "Email", "Role", "Active", "Area", "Division"]
+    view = df[view_cols].copy()
+    edited = st.data_editor(
+        view,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Active": st.column_config.CheckboxColumn("Active"),
+            "Area": st.column_config.SelectboxColumn("Area", options=area_options),
+            "Division": st.column_config.SelectboxColumn("Division", options=division_options),
+        },
+        key="users_editor",
+    )
+
+    if st.button("Guardar Users", use_container_width=True):
+        statements = []
+        orig_ids = set(df["UserId"].dropna().astype(int).tolist())
+        edited_ids = set()
+
+        for _, row in edited.iterrows():
+            user_id = row.get("UserId")
+            username = row.get("Username")
+            email = row.get("Email")
+            role = row.get("Role")
+            active = int(bool(row.get("Active", True)))
+            area_id = area_name_to_id.get(row.get("Area")) if has_area_id else None
+            division_id = div_name_to_id.get(row.get("Division")) if has_division_id else None
+
+            if is_new_id(user_id):
+                if not username:
+                    continue
+                cols = ["Username", "Email", "Role", "Active"]
+                vals = [username, email, role, active]
+                if has_area_id:
+                    cols.append("AreaId")
+                    vals.append(area_id)
+                if has_division_id:
+                    cols.append("DivisionId")
+                    vals.append(division_id)
+                col_sql = ", ".join(cols)
+                qmarks = ", ".join(["?"] * len(vals))
+                statements.append(
+                    (f"INSERT INTO {SCHEMA}.Users ({col_sql}) VALUES ({qmarks})", tuple(vals))
+                )
+            else:
+                user_id = int(user_id)
+                edited_ids.add(user_id)
+                sets = ["Username = ?", "Email = ?", "Role = ?", "Active = ?"]
+                vals = [username, email, role, active]
+                if has_area_id:
+                    sets.append("AreaId = ?")
+                    vals.append(area_id)
+                if has_division_id:
+                    sets.append("DivisionId = ?")
+                    vals.append(division_id)
+                set_sql = ", ".join(sets)
+                statements.append(
+                    (f"UPDATE {SCHEMA}.Users SET {set_sql} WHERE UserId = ?", tuple(vals + [user_id]))
+                )
+
+        for rid in (orig_ids - edited_ids):
+            statements.append((f"UPDATE {SCHEMA}.Users SET Active = 0 WHERE UserId = ?", (rid,)))
+
+        execute_many(statements)
+        st.success("Users guardados.")
+        st.rerun()
+
+
 def main():
     st.title("Administrador de Datos Maestros (Azure)")
     st.caption(f"Esquema activo: {SCHEMA}")
@@ -296,21 +424,7 @@ def main():
                 st.rerun()
 
         elif table == "Users":
-            df = load_df(
-                f"SELECT UserId, Username, Email, Role, Active FROM {SCHEMA}.Users ORDER BY UserId"
-            )
-            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="users")
-            if st.button("Guardar Users", use_container_width=True):
-                save_simple_table(
-                    df,
-                    edited,
-                    "Users",
-                    "UserId",
-                    ["Username", "Email", "Role", "Active"],
-                    "Active",
-                )
-                st.success("Users guardados.")
-                st.rerun()
+            user_editor()
 
     except Exception as exc:
         st.error(f"Error al guardar datos en {table}: {exc}")
