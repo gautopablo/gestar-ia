@@ -557,6 +557,344 @@ def init_db():
         conn.close()
 
 
+def _find_user_id_by_username(username):
+    if not username:
+        return None
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE LOWER(Username) = LOWER(?)",
+            (username,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def insert_ticket_record(draft, ids, metadata):
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        requester_id = metadata.get("requester_id")
+        if requester_id is None:
+            cursor.execute(
+                f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE Active = 1 ORDER BY UserId"
+            )
+            requester = cursor.fetchone()
+            requester_id = requester[0] if requester else None
+
+        cursor.execute(
+            f"""
+            INSERT INTO {qname('Tickets')} (
+                Title, Description, RequesterId, SuggestedAssigneeId, AssigneeId,
+                PlantaId, AreaId, CategoriaId, SubcategoriaId, PrioridadId, EstadoId,
+                ConfidenceScore, OriginalPrompt, AiProcessingTime, ConversationId, NeedByAt
+            ) OUTPUT INSERTED.TicketId VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                draft.get("titulo") or "Ticket sin titulo",
+                draft.get("descripcion") or "Sin descripcion detallada",
+                requester_id,
+                ids.get("suggested_assignee_id"),
+                metadata.get("assignee_id"),
+                ids.get("planta_id"),
+                ids.get("area_id"),
+                ids.get("categoria_id"),
+                ids.get("subcategoria_id"),
+                ids.get("prioridad_id"),
+                ids.get("estado_id"),
+                metadata.get("confidence_score", 0.8),
+                metadata.get("original_prompt"),
+                int(metadata.get("ai_processing_time", 0)),
+                metadata.get("conversation_id"),
+                draft.get("fecha_necesidad_resuelta"),
+            ),
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def fetch_tickets_for_form(filters):
+    conn = get_azure_master_connection()
+    try:
+        where = []
+        params = []
+
+        if filters.get("estado_id"):
+            where.append("t.EstadoId = ?")
+            params.append(filters["estado_id"])
+        if filters.get("prioridad_id"):
+            where.append("t.PrioridadId = ?")
+            params.append(filters["prioridad_id"])
+        if filters.get("area_id"):
+            where.append("t.AreaId = ?")
+            params.append(filters["area_id"])
+        if filters.get("query"):
+            where.append("(t.Title LIKE ? OR t.Description LIKE ?)")
+            pattern = f"%{filters['query']}%"
+            params.extend([pattern, pattern])
+
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        sql = f"""
+            SELECT
+                t.TicketId,
+                t.Title,
+                t.Description,
+                p.Nombre AS Planta,
+                d.Nombre AS Division,
+                a.Nombre AS Area,
+                c.Nombre AS Categoria,
+                s.Nombre AS Subcategoria,
+                pr.Nombre AS Prioridad,
+                e.Nombre AS Estado,
+                ureq.Username AS Solicitante,
+                uasg.Username AS Asignado,
+                usug.Username AS Sugerido,
+                t.NeedByAt,
+                t.CreatedAt
+            FROM {qname('Tickets')} t
+            LEFT JOIN {qname('Plantas')} p ON t.PlantaId = p.PlantaId
+            LEFT JOIN {qname('Areas')} a ON t.AreaId = a.AreaId
+            LEFT JOIN {qname('Divisiones')} d ON a.DivisionId = d.DivisionId
+            LEFT JOIN {qname('Categorias')} c ON t.CategoriaId = c.CategoriaId
+            LEFT JOIN {qname('Subcategorias')} s ON t.SubcategoriaId = s.SubcategoriaId
+            LEFT JOIN {qname('Prioridades')} pr ON t.PrioridadId = pr.PrioridadId
+            LEFT JOIN {qname('Estados')} e ON t.EstadoId = e.EstadoId
+            LEFT JOIN {qname('Users')} ureq ON t.RequesterId = ureq.UserId
+            LEFT JOIN {qname('Users')} uasg ON t.AssigneeId = uasg.UserId
+            LEFT JOIN {qname('Users')} usug ON t.SuggestedAssigneeId = usug.UserId
+            {where_sql}
+            ORDER BY t.TicketId DESC
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        cols = [c[0] for c in cursor.description]
+        return pd.DataFrame.from_records(rows, columns=cols)
+    finally:
+        conn.close()
+
+
+def fetch_ticket_for_edit(ticket_id):
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT
+                TicketId, Title, Description, PlantaId, AreaId, CategoriaId, SubcategoriaId,
+                PrioridadId, EstadoId, SuggestedAssigneeId, AssigneeId, NeedByAt
+            FROM {qname('Tickets')}
+            WHERE TicketId = ?
+            """,
+            (ticket_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        cols = [c[0] for c in cursor.description]
+        return dict(zip(cols, row))
+    finally:
+        conn.close()
+
+
+def update_ticket_from_form(ticket_id, updates):
+    if not updates:
+        return
+
+    def _normalize_cmp(v):
+        if isinstance(v, datetime):
+            return v.replace(microsecond=0).isoformat(sep=" ")
+        if v is None:
+            return None
+        return str(v)
+
+    def _lookup_display_value(cursor, field_name, raw_value):
+        if raw_value is None:
+            return None
+
+        lookup_map = {
+            "PlantaId": ("Plantas", "PlantaId", "Nombre"),
+            "AreaId": ("Areas", "AreaId", "Nombre"),
+            "CategoriaId": ("Categorias", "CategoriaId", "Nombre"),
+            "SubcategoriaId": ("Subcategorias", "SubcategoriaId", "Nombre"),
+            "PrioridadId": ("Prioridades", "PrioridadId", "Nombre"),
+            "EstadoId": ("Estados", "EstadoId", "Nombre"),
+            "AssigneeId": ("Users", "UserId", "Username"),
+        }
+        if field_name not in lookup_map:
+            return _normalize_cmp(raw_value)
+
+        table, pk_col, label_col = lookup_map[field_name]
+        cursor.execute(
+            f"SELECT TOP 1 {label_col} FROM {qname(table)} WHERE {pk_col} = ?",
+            (raw_value,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else _normalize_cmp(raw_value)
+
+    backend = get_ticket_log_backend()
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT
+                Title, Description, PlantaId, AreaId, CategoriaId, SubcategoriaId,
+                PrioridadId, EstadoId, AssigneeId, NeedByAt
+            FROM {qname('Tickets')}
+            WHERE TicketId = ?
+            """,
+            (ticket_id,),
+        )
+        current_row = cursor.fetchone()
+        if not current_row:
+            raise RuntimeError(f"No existe TicketId={ticket_id}")
+
+        current_cols = [
+            "Title",
+            "Description",
+            "PlantaId",
+            "AreaId",
+            "CategoriaId",
+            "SubcategoriaId",
+            "PrioridadId",
+            "EstadoId",
+            "AssigneeId",
+            "NeedByAt",
+        ]
+        current = dict(zip(current_cols, current_row))
+
+        changed_items = []
+        for field_name, new_value in updates.items():
+            old_value = current.get(field_name)
+            if _normalize_cmp(old_value) != _normalize_cmp(new_value):
+                changed_items.append((field_name, old_value, new_value))
+
+        if not changed_items:
+            return
+
+        set_parts = []
+        params = []
+        for field_name, _old, new_value in changed_items:
+            set_parts.append(f"{field_name} = ?")
+            params.append(new_value)
+        set_parts.append("UpdatedAt = GETDATE()")
+        params.append(ticket_id)
+        cursor.execute(
+            f"UPDATE {qname('Tickets')} SET {', '.join(set_parts)} WHERE TicketId = ?",
+            params,
+        )
+
+        field_alias = {
+            "Title": "Title",
+            "Description": "Description",
+            "PlantaId": "Planta",
+            "AreaId": "Area",
+            "CategoriaId": "Categoria",
+            "SubcategoriaId": "Subcategoria",
+            "PrioridadId": "Prioridad",
+            "EstadoId": "Estado",
+            "AssigneeId": "Assignee",
+            "NeedByAt": "NeedByAt",
+        }
+
+        for field_name, old_value, new_value in changed_items:
+            old_disp = _lookup_display_value(cursor, field_name, old_value)
+            new_disp = _lookup_display_value(cursor, field_name, new_value)
+            cursor.execute(
+                f"""
+                INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+                VALUES (?, NULL, 0, ?, ?, ?)
+                """,
+                (
+                    ticket_id,
+                    field_alias.get(field_name, field_name),
+                    None if old_disp is None else str(old_disp),
+                    None if new_disp is None else str(new_disp),
+                ),
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticket_log_backend():
+    schema = get_master_schema()
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TABLE_SCHEMA, TABLE_NAME
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'TicketLogs'
+            """,
+            (schema,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise RuntimeError(
+                f"No existe {schema}.TicketLogs. La app no usa tablas legacy de dbo."
+            )
+        table_schema, table_name = row[0], row[1]
+        return {"mode": "normalized", "table": f"{table_schema}.{table_name}"}
+    finally:
+        conn.close()
+
+
+def fetch_ticket_comments(ticket_id):
+    backend = get_ticket_log_backend()
+
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT TOP 100
+                l.ChangedAt AS FechaHora,
+                COALESCE(u.Username, 'Sistema') AS Usuario,
+                l.FieldName AS Campo,
+                l.OldValue AS [Valor Anterior],
+                l.NewValue AS [Nuevo Valor]
+            FROM {backend['table']} l
+            LEFT JOIN {qname('Users')} u ON l.UserId = u.UserId
+            WHERE TicketId = ?
+            ORDER BY l.ChangedAt DESC
+            """,
+            (ticket_id,),
+        )
+        rows = cursor.fetchall()
+        cols = [c[0] for c in cursor.description]
+        return pd.DataFrame.from_records(rows, columns=cols)
+    finally:
+        conn.close()
+
+
+def add_ticket_comment(ticket_id, comment, user_id=None):
+    backend = get_ticket_log_backend()
+
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+            VALUES (?, ?, 0, 'comment', NULL, ?)
+            """,
+            (ticket_id, user_id, comment),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ==========================================
 # 2. LÓGICA HÍBRIDA (AI + RULES)
 # ==========================================
@@ -672,41 +1010,153 @@ class TicketAssistant:
 
 
 # ==========================================
-# 3. INTERFAZ STREAMLIT (WHATSAPP STYLE)
+# 3. INTERFAZ STREAMLIT (ESTILO TARANTO)
 # ==========================================
 
 st.set_page_config(page_title="Gestar IA - Asistente de Tickets", layout="wide")
 
-# CSS para estilo WhatsApp
 st.markdown(
     """
 <style>
-    .stApp { background-color: #f0f2f5; }
+    @import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Raleway:wght@600;700&display=swap');
+    .stApp { background-color: #f5f6f8; }
+    html, body, [class*="css"] {
+        font-family: "Lato", sans-serif;
+        color: #444;
+    }
+    h1, h2, h3, .raleway {
+        font-family: "Raleway", sans-serif;
+        font-weight: 700;
+    }
+    .block-container {
+        padding-top: 0.8rem;
+    }
+    .taranto-header {
+        background: #ffffff;
+        border-bottom: 3px solid #d52e25;
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 2px 15px rgba(0,0,0,0.04);
+    }
+    .taranto-logo {
+        color: #156099;
+        font-family: "Raleway", sans-serif;
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: 1px;
+        margin: 0;
+    }
+    .taranto-title {
+        margin: 0;
+        color: #d52e25;
+        text-align: center;
+        font-family: "Raleway", sans-serif;
+        font-size: 2rem;
+        font-weight: 700;
+        line-height: 1.15;
+    }
+    .taranto-subtitle {
+        font-size: 1.05rem;
+        color: #444;
+        font-weight: 400;
+    }
+    .v2-card {
+        background-color: #fff;
+        padding: 1rem 1.1rem;
+        border-radius: 10px;
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        box-shadow: 0 2px 15px rgba(0, 0, 0, 0.04);
+        margin-bottom: 0.8rem;
+    }
     .chat-bubble {
-        padding: 10px 15px;
-        border-radius: 15px;
-        margin-bottom: 10px;
-        max-width: 70%;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        padding: 10px 14px;
+        border-radius: 10px;
+        margin-bottom: 8px;
+        max-width: 82%;
         white-space: pre-wrap;
+        border: 1px solid rgba(128,128,128,0.2);
+        box-shadow: 0 2px 12px rgba(0,0,0,0.04);
     }
     .user-bubble {
         background-color: #dcf8c6;
         margin-left: auto;
-        border-top-right-radius: 0;
+        border-left: 3px solid #34b233;
     }
     .bot-bubble {
         background-color: #ffffff;
         margin-right: auto;
-        border-top-left-radius: 0;
-        box-shadow: 0 1px 0.5px rgba(0,0,0,0.13);
+        border-left: 3px solid #d52e25;
     }
-    .chat-container {
-        background-color: #e5ddd5;
-        padding: 20px;
-        border-radius: 10px;
-        height: 600px;
-        overflow-y: auto;
+    div.stButton > button {
+        border-radius: 4px;
+        font-family: "Raleway", sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 700;
+        transition: all 0.25s;
+        white-space: nowrap;
+    }
+    div.stButton > button[kind="primary"] {
+        background-color: #d52e25;
+        border: none;
+        color: white;
+    }
+    .active-nav button {
+        background-color: #156099 !important;
+        color: white !important;
+        border: none !important;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #e9edf1;
+        border-radius: 4px 4px 0 0;
+        padding: 8px 16px;
+        font-weight: 600;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #156099 !important;
+        color: white !important;
+    }
+    .stDataFrame {
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        border: 1px solid rgba(128,128,128,0.15);
+    }
+    /* Mayor contraste para campos de edición en formularios */
+    div[data-baseweb="input"] > div,
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="textarea"] > div,
+    .stTextInput input,
+    .stTextArea textarea {
+        background-color: #ffffff !important;
+        border: 1px solid #9aa7b5 !important;
+    }
+    .stTextInput input,
+    .stTextArea textarea {
+        color: #1f2933 !important;
+    }
+    div[data-baseweb="input"] > div:focus-within,
+    div[data-baseweb="select"] > div:focus-within,
+    div[data-baseweb="textarea"] > div:focus-within {
+        border-color: #156099 !important;
+        box-shadow: 0 0 0 2px rgba(21, 96, 153, 0.18) !important;
+    }
+    .stTextInput input::placeholder,
+    .stTextArea textarea::placeholder {
+        color: #6b7785 !important;
+        opacity: 1 !important;
+    }
+    header { visibility: hidden; }
+    footer { visibility: hidden; }
+    .top-meta {
+        text-align: right;
+        color: #156099;
+        font-size: 0.95rem;
+        font-weight: 700;
     }
 </style>
 """,
@@ -804,217 +1254,510 @@ if "last_prompt" not in st.session_state:
     st.session_state.last_prompt = ""
 if "show_confirm_buttons" not in st.session_state:
     st.session_state.show_confirm_buttons = False
+if "form_selected_ticket_id" not in st.session_state:
+    st.session_state.form_selected_ticket_id = None
+if "ui_section" not in st.session_state:
+    st.session_state.ui_section = "CHAT IA"
 
-# Mostrar Mensajes
-for msg in st.session_state.messages:
-    role_class = "user-bubble" if msg["role"] == "user" else "bot-bubble"
-    st.markdown(
-        f'<div class="chat-bubble {role_class}">{msg["content"]}</div>',
-        unsafe_allow_html=True,
-    )
 
-# Si hay botones activos, se muestran debajo del último mensaje
-if st.session_state.show_confirm_buttons:
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("✅ Crear Ticket", key="btn_crear"):
-            d = st.session_state.ticket_draft
-            ids, map_warnings = map_entities_to_ids(
-                d, st.session_state.master_indexes, st.session_state.master_data
-            )
-            need_by_dt = safe_parse_datetime(d.get("fecha_necesidad"))
-            d["fecha_necesidad_resuelta"] = (
-                need_by_dt.strftime("%Y-%m-%d %H:%M:%S") if need_by_dt else None
-            )
-            score = compute_completeness_score(d, ids)
-
-            conn = get_azure_master_connection()
-            cursor = conn.cursor()
-
-            cursor.execute(
-                f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE Active = 1 ORDER BY UserId"
-            )
-            requester = cursor.fetchone()
-            requester_id = requester[0] if requester else None
-            tickets_table = qname("Tickets")
-
-            cursor.execute(
-                f"""
-                INSERT INTO {tickets_table} (
-                    Title, Description, RequesterId, SuggestedAssigneeId, AssigneeId,
-                    PlantaId, AreaId, CategoriaId, SubcategoriaId, PrioridadId, EstadoId,
-                    ConfidenceScore, OriginalPrompt, AiProcessingTime, ConversationId, NeedByAt
-                ) OUTPUT INSERTED.TicketId VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    d.get("titulo") or "Ticket sin titulo",
-                    d.get("descripcion") or "Sin descripción detallada",
-                    requester_id,
-                    ids.get("suggested_assignee_id"),
-                    None,
-                    ids.get("planta_id"),
-                    ids.get("area_id"),
-                    ids.get("categoria_id"),
-                    ids.get("subcategoria_id"),
-                    ids.get("prioridad_id"),
-                    ids.get("estado_id"),
-                    st.session_state.last_ai_res.get("confidence", 0.8),
-                    st.session_state.last_prompt or "Confirmado por botón",
-                    int(st.session_state.last_ai_res.get("ai_processing_time", 0)),
-                    st.session_state.last_ai_res.get("conversation_id"),
-                    d.get("fecha_necesidad_resuelta"),
-                ),
-            )
-            # SQL Server: recuperamos el TicketId desde OUTPUT INSERTED
-            ticket_row = cursor.fetchone()
-            t_id = ticket_row[0] if ticket_row else None
-            conn.commit()
-            conn.close()
-
-            warnings = []
-            if not ids.get("area_id") and not ids.get("suggested_assignee_id"):
-                warnings.append(
-                    "Falta Área o Usuario sugerido. El ticket puede requerir más revisión del responsable del área."
-                )
-            warnings.extend(map_warnings)
-            if d.get("fecha_necesidad") and not d.get("fecha_necesidad_resuelta"):
-                warnings.append(
-                    "No pude normalizar la Fecha de Necesidad. Se guardó sin fecha normalizada."
-                )
-
-            warning_text = "<b>Observaciones:</b> Sin observaciones."
-            if warnings:
-                warning_lines = "<br>".join([f"- {w}" for w in warnings])
-                warning_text = f"<b>Observaciones:</b><br>{warning_lines}"
-
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": (
-                        f"✅ ¡Ticket #{t_id} creado con éxito!"
-                        f"<br><b>Completitud:</b> {score.upper()}"
-                        f"<br>{warning_text}"
-                    ),
-                }
-            )
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": "Listo. Ya podés cargar un nuevo ticket o tarea cuando quieras.",
-                }
-            )
-            # Reset
-            for k in st.session_state.ticket_draft:
-                st.session_state.ticket_draft[k] = None
-            st.session_state.show_confirm_buttons = False
-            st.rerun()
-    with col2:
-        if st.button("✏️ Agregar información", key="btn_mas_info"):
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": "Entendido. Dime qué más quieres agregar o corregir.",
-                }
-            )
-            st.session_state.show_confirm_buttons = False
-            st.rerun()
-
-# Chat Input
-if prompt := st.chat_input("Escribe tu reporte aquí..."):
-    # Agregar mensaje de usuario
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    st.session_state.show_confirm_buttons = (
-        False  # Ocultar botones al recibir nuevo input
-    )
-    st.rerun()
-
-# Procesar último mensaje si es del usuario
-if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-    assistant = TicketAssistant(api_key, model_name)
-    user_input = st.session_state.messages[-1]["content"]
-
-    # 1. Procesamiento con IA
-    with st.spinner("Procesando..."):
-        catalogs = get_llm_catalogs(st.session_state.master_data)
-        ai_res, p_time, s_prompt = assistant.extract_entities(
-            user_input, st.session_state.ticket_draft, catalogs
+def render_chat_mode(api_key, model_name, debug_expander):
+    for msg in st.session_state.messages:
+        role_class = "user-bubble" if msg["role"] == "user" else "bot-bubble"
+        st.markdown(
+            f'<div class="chat-bubble {role_class}">{msg["content"]}</div>',
+            unsafe_allow_html=True,
         )
-        ai_res["ai_processing_time"] = int(p_time)
-        st.session_state.last_ai_res = ai_res
-        st.session_state.last_prompt = s_prompt
 
-        if "error" not in ai_res:
-            intencion = ai_res.get("intencion", "desconocido")
-
-            # --- FLUJO SOCIAL ---
-            if intencion == "social":
-                bot_res = ai_res.get(
-                    "respuesta_social",
-                    "¡Hola! Estoy listo para ayudarte. Por favor, dime qué necesitas reportar.",
+    if st.session_state.show_confirm_buttons:
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Crear Ticket", key="btn_crear"):
+                d = st.session_state.ticket_draft
+                ids, map_warnings = map_entities_to_ids(
+                    d, st.session_state.master_indexes, st.session_state.master_data
+                )
+                need_by_dt = safe_parse_datetime(d.get("fecha_necesidad"))
+                d["fecha_necesidad_resuelta"] = (
+                    need_by_dt.strftime("%Y-%m-%d %H:%M:%S") if need_by_dt else None
+                )
+                score = compute_completeness_score(d, ids)
+                t_id = insert_ticket_record(
+                    d,
+                    ids,
+                    {
+                        "requester_id": None,
+                        "assignee_id": None,
+                        "confidence_score": st.session_state.last_ai_res.get(
+                            "confidence", 0.8
+                        ),
+                        "original_prompt": st.session_state.last_prompt
+                        or "Confirmado por boton",
+                        "ai_processing_time": st.session_state.last_ai_res.get(
+                            "ai_processing_time", 0
+                        ),
+                        "conversation_id": st.session_state.last_ai_res.get(
+                            "conversation_id"
+                        ),
+                    },
                 )
 
-            # --- FLUJO CREAR TICKET ---
-            elif intencion == "crear_ticket":
-                # Actualizar borrador con lo nuevo (si no es null)
-                for k in st.session_state.ticket_draft.keys():
-                    v = ai_res.get(k)
-                    if v is not None and v != "":
-                        st.session_state.ticket_draft[k] = v
+                warnings = []
+                if not ids.get("area_id") and not ids.get("suggested_assignee_id"):
+                    warnings.append(
+                        "Falta Area o Usuario sugerido. El ticket puede requerir mas revision del responsable del area."
+                    )
+                warnings.extend(map_warnings)
+                if d.get("fecha_necesidad") and not d.get("fecha_necesidad_resuelta"):
+                    warnings.append(
+                        "No pude normalizar la Fecha de Necesidad. Se guardo sin fecha normalizada."
+                    )
 
-                # Resolver usuario sugerido para mostrar nombre+mail en el resumen
-                resolved_user, _ = resolve_user_candidate(
-                    st.session_state.ticket_draft.get("usuario_sugerido"),
-                    st.session_state.master_indexes,
+                warning_text = "<b>Observaciones:</b> Sin observaciones."
+                if warnings:
+                    warning_lines = "<br>".join([f"- {w}" for w in warnings])
+                    warning_text = f"<b>Observaciones:</b><br>{warning_lines}"
+
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"✅ ¡Ticket #{t_id} creado con éxito!"
+                            f"<br><b>Completitud:</b> {score.upper()}"
+                            f"<br>{warning_text}"
+                        ),
+                    }
                 )
-                st.session_state.ticket_draft["usuario_sugerido_resuelto"] = (
-                    resolved_user
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "Listo. Ya podés cargar un nuevo ticket o tarea cuando quieras.",
+                    }
                 )
-
-                draft_fecha = st.session_state.ticket_draft.get("fecha_necesidad")
-                parsed_from_draft = safe_parse_datetime(draft_fecha)
-                parsed_from_user = safe_parse_datetime(user_input)
-
-                # Priorizar fecha parseada desde el mensaje del usuario.
-                # Esto evita aceptar fechas absolutas erróneas inferidas por la IA.
-                parsed_need = parsed_from_draft
-                if parsed_from_user:
-                    parsed_need = parsed_from_user
-
-                # Si la fecha del draft viene con lenguaje relativo, no aceptar pasado.
-                if (
-                    parsed_need
-                    and has_relative_date_language(draft_fecha)
-                    and parsed_need.date() < datetime.now().date()
-                ):
-                    parsed_need = parsed_from_user
-
-                st.session_state.ticket_draft["fecha_necesidad_resuelta"] = (
-                    parsed_need.strftime("%Y-%m-%d %H:%M:%S") if parsed_need else None
+                for k in st.session_state.ticket_draft:
+                    st.session_state.ticket_draft[k] = None
+                st.session_state.show_confirm_buttons = False
+                st.rerun()
+        with col2:
+            if st.button("✏️ Agregar información", key="btn_mas_info"):
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "Entendido. Dime qué más quieres agregar o corregir.",
+                    }
                 )
+                st.session_state.show_confirm_buttons = False
+                st.rerun()
 
-                # 2. Generar mensaje de revisión o bloqueo (ya con fecha normalizada)
-                bot_res, bloqueante = assistant.generate_review_message(
-                    st.session_state.ticket_draft
+    if prompt := st.chat_input("Escribe tu solicitud/tarea aquí..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.show_confirm_buttons = False
+        st.rerun()
+
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+        assistant = TicketAssistant(api_key, model_name)
+        user_input = st.session_state.messages[-1]["content"]
+        with st.spinner("Procesando..."):
+            catalogs = get_llm_catalogs(st.session_state.master_data)
+            ai_res, p_time, s_prompt = assistant.extract_entities(
+                user_input, st.session_state.ticket_draft, catalogs
+            )
+            ai_res["ai_processing_time"] = int(p_time)
+            st.session_state.last_ai_res = ai_res
+            st.session_state.last_prompt = s_prompt
+
+            if "error" not in ai_res:
+                intencion = ai_res.get("intencion", "desconocido")
+                if intencion == "social":
+                    bot_res = ai_res.get(
+                        "respuesta_social",
+                        "¡Hola! Estoy listo para ayudarte. Por favor, dime qué necesitas reportar.",
+                    )
+                elif intencion == "crear_ticket":
+                    for k in st.session_state.ticket_draft.keys():
+                        v = ai_res.get(k)
+                        if v is not None and v != "":
+                            st.session_state.ticket_draft[k] = v
+
+                    resolved_user, _ = resolve_user_candidate(
+                        st.session_state.ticket_draft.get("usuario_sugerido"),
+                        st.session_state.master_indexes,
+                    )
+                    st.session_state.ticket_draft["usuario_sugerido_resuelto"] = (
+                        resolved_user
+                    )
+
+                    draft_fecha = st.session_state.ticket_draft.get("fecha_necesidad")
+                    parsed_from_draft = safe_parse_datetime(draft_fecha)
+                    parsed_from_user = safe_parse_datetime(user_input)
+                    parsed_need = parsed_from_draft
+                    if parsed_from_user:
+                        parsed_need = parsed_from_user
+                    if (
+                        parsed_need
+                        and has_relative_date_language(draft_fecha)
+                        and parsed_need.date() < datetime.now().date()
+                    ):
+                        parsed_need = parsed_from_user
+
+                    st.session_state.ticket_draft["fecha_necesidad_resuelta"] = (
+                        parsed_need.strftime("%Y-%m-%d %H:%M:%S")
+                        if parsed_need
+                        else None
+                    )
+                    bot_res, bloqueante = assistant.generate_review_message(
+                        st.session_state.ticket_draft
+                    )
+                    if not bloqueante:
+                        st.session_state.show_confirm_buttons = True
+                else:
+                    bot_res = "No estoy seguro de haber entendido. ¿Podrías darme más detalles sobre el problema o solicitud?"
+
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": bot_res}
                 )
-
-                if not bloqueante:
-                    st.session_state.show_confirm_buttons = True
-
-            # --- FALLBACK ---
+                st.rerun()
             else:
-                bot_res = "No estoy seguro de haber entendido. ¿Podrías darme más detalles sobre el problema o solicitud?"
+                st.sidebar.error(f"Error de API: {ai_res['error']}")
 
-            st.session_state.messages.append({"role": "assistant", "content": bot_res})
-            st.rerun()
-        else:
-            st.sidebar.error(f"Error de API: {ai_res['error']}")
+    with debug_expander:
+        st.write("**Borrador Actual:**", st.session_state.ticket_draft)
+        st.write("**Última Respuesta JSON IA:**", st.session_state.last_ai_res)
+        st.write("**Prompt Enviado:**")
+        st.code(st.session_state.last_prompt or "", language="text")
 
-# Mostrar Debug en el Sidebar
-with debug_expander:
-    st.write("**Borrador Actual:**", st.session_state.ticket_draft)
-    st.write("**Última Respuesta JSON IA:**", st.session_state.last_ai_res)
-    st.write("**Prompt Enviado:**")
-    st.code(st.session_state.last_prompt or "", language="text")
+
+def render_form_mode():
+    st.subheader("Modo Formulario")
+    ticket_tab, tray_tab = st.tabs(["Nuevo Ticket", "Bandeja y Edicion"])
+
+    users = st.session_state.master_data.get("usuarios", [])
+    plantas = st.session_state.master_data.get("plantas", [])
+    areas = st.session_state.master_data.get("areas", [])
+    categorias = st.session_state.master_data.get("categorias", [])
+    subcategorias = st.session_state.master_data.get("subcategorias", [])
+    prioridades = st.session_state.master_data.get("prioridades", [])
+    estados = st.session_state.master_data.get("estados", [])
+
+    with ticket_tab:
+        with st.form("form_create_ticket"):
+            titulo = st.text_input("Titulo *")
+            descripcion = st.text_area("Descripcion *")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                planta_opt = [""] + [p["nombre"] for p in plantas]
+                planta_sel = st.selectbox("Planta", planta_opt)
+                categoria_opt = [""] + [c["nombre"] for c in categorias]
+                categoria_sel = st.selectbox("Categoria", categoria_opt)
+            with c2:
+                area_opt = [""] + [a["nombre"] for a in areas]
+                area_sel = st.selectbox("Area", area_opt)
+                subcat_opt = [""] + [s["nombre"] for s in subcategorias]
+                subcat_sel = st.selectbox("Subcategoria", subcat_opt)
+            with c3:
+                prio_opt = ["Media"] + [p["nombre"] for p in prioridades]
+                prio_sel = st.selectbox("Prioridad", prio_opt)
+                user_opt = [""] + [u["username"] for u in users]
+                user_sel = st.selectbox("Usuario sugerido", user_opt)
+
+            fecha_txt = st.text_input(
+                "Fecha de necesidad (ej: hoy, 15/02/2026, proximo lunes)"
+            )
+            requester_user = st.selectbox("Solicitante", user_opt, index=1 if len(user_opt) > 1 else 0)
+            submitted = st.form_submit_button("Crear Ticket")
+
+        if submitted:
+            if not titulo.strip() or not descripcion.strip():
+                st.error("Titulo y Descripcion son obligatorios.")
+            else:
+                draft = {
+                    "titulo": titulo.strip(),
+                    "descripcion": descripcion.strip(),
+                    "planta": planta_sel or None,
+                    "division": None,
+                    "area": area_sel or None,
+                    "categoria": categoria_sel or None,
+                    "subcategoria": subcat_sel or None,
+                    "prioridad": prio_sel or None,
+                    "usuario_sugerido": user_sel or None,
+                    "fecha_necesidad": fecha_txt or None,
+                    "fecha_necesidad_resuelta": None,
+                }
+                parsed = safe_parse_datetime(draft.get("fecha_necesidad"))
+                draft["fecha_necesidad_resuelta"] = (
+                    parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed else None
+                )
+                ids, warns = map_entities_to_ids(
+                    draft, st.session_state.master_indexes, st.session_state.master_data
+                )
+                requester_id = _find_user_id_by_username(requester_user)
+                ticket_id = insert_ticket_record(
+                    draft,
+                    ids,
+                    {
+                        "requester_id": requester_id,
+                        "assignee_id": None,
+                        "confidence_score": 1.0,
+                        "original_prompt": "Creado desde Modo Formulario",
+                        "ai_processing_time": 0,
+                        "conversation_id": None,
+                    },
+                )
+                st.success(f"Ticket #{ticket_id} creado correctamente.")
+                if warns:
+                    st.warning(" | ".join(warns))
+
+    with tray_tab:
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            estado_opt = ["Todos"] + [e["nombre"] for e in estados]
+            estado_sel = st.selectbox("Estado", estado_opt, key="form_filter_estado")
+        with c2:
+            prio_opt = ["Todas"] + [p["nombre"] for p in prioridades]
+            prio_filter = st.selectbox("Prioridad", prio_opt, key="form_filter_prio")
+        with c3:
+            area_opt = ["Todas"] + [a["nombre"] for a in areas]
+            area_filter = st.selectbox("Area", area_opt, key="form_filter_area")
+        with c4:
+            q = st.text_input("Buscar", key="form_filter_query")
+
+        estado_id = next(
+            (e["id"] for e in estados if e["nombre"] == estado_sel), None
+        ) if estado_sel != "Todos" else None
+        prioridad_id = next(
+            (p["id"] for p in prioridades if p["nombre"] == prio_filter), None
+        ) if prio_filter != "Todas" else None
+        area_id = next(
+            (a["id"] for a in areas if a["nombre"] == area_filter), None
+        ) if area_filter != "Todas" else None
+
+        df = fetch_tickets_for_form(
+            {
+                "estado_id": estado_id,
+                "prioridad_id": prioridad_id,
+                "area_id": area_id,
+                "query": q.strip() if q else None,
+            }
+        )
+        if df.empty:
+            st.info("No hay tickets para los filtros seleccionados.")
+            return
+
+        st.dataframe(df, width="stretch", height=280)
+        ticket_ids = df["TicketId"].tolist()
+        default_idx = 0
+        if st.session_state.form_selected_ticket_id in ticket_ids:
+            default_idx = ticket_ids.index(st.session_state.form_selected_ticket_id)
+        selected_ticket_id = st.selectbox(
+            "Seleccionar Ticket",
+            ticket_ids,
+            index=default_idx,
+            key="form_selected_ticket",
+        )
+        st.session_state.form_selected_ticket_id = selected_ticket_id
+
+        t = fetch_ticket_for_edit(selected_ticket_id)
+        if not t:
+            st.error("No se pudo cargar el ticket seleccionado.")
+            return
+
+        st.markdown(f"### Detalle Ticket #{selected_ticket_id}")
+        with st.form("form_edit_ticket"):
+            title_new = st.text_input("Titulo", value=t.get("Title") or "")
+            desc_new = st.text_area("Descripcion", value=t.get("Description") or "")
+
+            plantas_by_id = {p["id"]: p["nombre"] for p in plantas}
+            areas_by_id = {a["id"]: a["nombre"] for a in areas}
+            cats_by_id = {c["id"]: c["nombre"] for c in categorias}
+            subcats_by_id = {s["id"]: s["nombre"] for s in subcategorias}
+            prio_by_id = {p["id"]: p["nombre"] for p in prioridades}
+            est_by_id = {e["id"]: e["nombre"] for e in estados}
+            users_by_id = {u["id"]: u["username"] for u in users}
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                planta_edit = st.selectbox(
+                    "Planta",
+                    list(plantas_by_id.values()),
+                    index=max(
+                        list(plantas_by_id.keys()).index(t.get("PlantaId"))
+                        if t.get("PlantaId") in plantas_by_id
+                        else 0,
+                        0,
+                    ),
+                )
+                area_edit = st.selectbox(
+                    "Area",
+                    list(areas_by_id.values()),
+                    index=max(
+                        list(areas_by_id.keys()).index(t.get("AreaId"))
+                        if t.get("AreaId") in areas_by_id
+                        else 0,
+                        0,
+                    ),
+                )
+            with c2:
+                cat_edit = st.selectbox(
+                    "Categoria",
+                    list(cats_by_id.values()),
+                    index=max(
+                        list(cats_by_id.keys()).index(t.get("CategoriaId"))
+                        if t.get("CategoriaId") in cats_by_id
+                        else 0,
+                        0,
+                    ),
+                )
+                subcat_edit = st.selectbox(
+                    "Subcategoria",
+                    list(subcats_by_id.values()),
+                    index=max(
+                        list(subcats_by_id.keys()).index(t.get("SubcategoriaId"))
+                        if t.get("SubcategoriaId") in subcats_by_id
+                        else 0,
+                        0,
+                    ),
+                )
+            with c3:
+                prio_edit = st.selectbox(
+                    "Prioridad",
+                    list(prio_by_id.values()),
+                    index=max(
+                        list(prio_by_id.keys()).index(t.get("PrioridadId"))
+                        if t.get("PrioridadId") in prio_by_id
+                        else 0,
+                        0,
+                    ),
+                )
+                estado_edit = st.selectbox(
+                    "Estado",
+                    list(est_by_id.values()),
+                    index=max(
+                        list(est_by_id.keys()).index(t.get("EstadoId"))
+                        if t.get("EstadoId") in est_by_id
+                        else 0,
+                        0,
+                    ),
+                )
+                assignee_opt = [""] + list(users_by_id.values())
+                current_assignee = users_by_id.get(t.get("AssigneeId"), "")
+                assignee_edit = st.selectbox(
+                    "Asignado a",
+                    assignee_opt,
+                    index=assignee_opt.index(current_assignee)
+                    if current_assignee in assignee_opt
+                    else 0,
+                )
+
+            need_by_raw = (
+                t.get("NeedByAt").strftime("%Y-%m-%d")
+                if t.get("NeedByAt")
+                else ""
+            )
+            need_by_text = st.text_input("Fecha necesidad", value=need_by_raw)
+            save_edit = st.form_submit_button("Guardar Cambios")
+
+        if save_edit:
+            parsed = safe_parse_datetime(need_by_text) if need_by_text else None
+            updates = {
+                "Title": title_new,
+                "Description": desc_new,
+                "PlantaId": next(
+                    (pid for pid, name in plantas_by_id.items() if name == planta_edit),
+                    None,
+                ),
+                "AreaId": next(
+                    (aid for aid, name in areas_by_id.items() if name == area_edit),
+                    None,
+                ),
+                "CategoriaId": next(
+                    (cid for cid, name in cats_by_id.items() if name == cat_edit),
+                    None,
+                ),
+                "SubcategoriaId": next(
+                    (sid for sid, name in subcats_by_id.items() if name == subcat_edit),
+                    None,
+                ),
+                "PrioridadId": next(
+                    (pid for pid, name in prio_by_id.items() if name == prio_edit),
+                    None,
+                ),
+                "EstadoId": next(
+                    (eid for eid, name in est_by_id.items() if name == estado_edit),
+                    None,
+                ),
+                "AssigneeId": next(
+                    (uid for uid, name in users_by_id.items() if name == assignee_edit),
+                    None,
+                ),
+                "NeedByAt": parsed if parsed else None,
+            }
+            update_ticket_from_form(selected_ticket_id, updates)
+            st.success("Ticket actualizado.")
+
+        st.markdown("#### Seguimiento / Comentarios")
+        try:
+            comments = fetch_ticket_comments(selected_ticket_id)
+            if comments.empty:
+                st.caption("Sin comentarios registrados.")
+            else:
+                st.dataframe(
+                    comments[
+                        ["FechaHora", "Usuario", "Campo", "Valor Anterior", "Nuevo Valor"]
+                    ],
+                    width="stretch",
+                    height=180,
+                    hide_index=True,
+                )
+            cmt = st.text_area("Nuevo comentario", key="form_comment_text")
+            if st.button("Agregar comentario", key="form_add_comment"):
+                if cmt.strip():
+                    add_ticket_comment(selected_ticket_id, cmt.strip())
+                    st.success("Comentario agregado.")
+                    st.rerun()
+                else:
+                    st.warning("Escribí un comentario antes de guardar.")
+        except Exception as e:
+            st.error(f"Error de logs: {e}")
+
+
+st.markdown(
+    """
+    <div class="taranto-header">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
+            <div style="min-width:160px;"><p class="taranto-logo">TARANTO</p></div>
+            <div style="flex:1;">
+                <h1 class="taranto-title">GESTAR <span class="taranto-subtitle">| Gestión de Solicitudes</span></h1>
+            </div>
+            <div style="min-width:220px;" class="top-meta">Azure SQL · Esquema: """
+    + get_master_schema()
+    + """</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+nav1, nav2, _ = st.columns([1, 1, 4], gap="small")
+with nav1:
+    cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
+    st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+    if st.button("CHAT IA", key="main_nav_chat", use_container_width=True):
+        st.session_state.ui_section = "CHAT IA"
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+with nav2:
+    cls = "active-nav" if st.session_state.ui_section == "MODO FORMULARIO" else ""
+    st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+    if st.button("MODO FORMULARIO", key="main_nav_form", use_container_width=True):
+        st.session_state.ui_section = "MODO FORMULARIO"
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("<hr style='border: 1px solid #d52e25; margin-top:0.2rem; margin-bottom:0.9rem;'>", unsafe_allow_html=True)
+
+if st.session_state.ui_section == "CHAT IA":
+    render_chat_mode(api_key, model_name, debug_expander)
+else:
+    render_form_mode()
 
 # Panel izquierdo (sidebar): tabla de tickets al final
 with st.sidebar:
