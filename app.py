@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import google.generativeai as genai
 from datetime import datetime, timedelta
+import base64
 import os
 import re
 import unicodedata
@@ -56,6 +57,14 @@ def get_master_schema():
 
 def qname(table_name):
     return f"{get_master_schema()}.{table_name}"
+
+
+def get_base64_image(image_path):
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except Exception:
+        return ""
 
 
 def safe_parse_datetime(value):
@@ -619,7 +628,7 @@ def insert_ticket_record(draft, ids, metadata):
         conn.close()
 
 
-def fetch_tickets_for_form(filters):
+def fetch_tickets_for_form(filters, limit=20):
     conn = get_azure_master_connection()
     try:
         where = []
@@ -642,6 +651,7 @@ def fetch_tickets_for_form(filters):
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         sql = f"""
             SELECT
+                TOP {int(limit)}
                 t.TicketId,
                 t.Title,
                 t.Description,
@@ -1259,6 +1269,8 @@ if "form_selected_ticket_id" not in st.session_state:
 if "ui_section" not in st.session_state:
     st.session_state.ui_section = "CHAT IA"
 
+taranto_logo_b64 = get_base64_image("assets/taranto-logo.png")
+
 
 def render_chat_mode(api_key, model_name, debug_expander):
     for msg in st.session_state.messages:
@@ -1459,9 +1471,7 @@ def render_form_mode():
                 user_opt = [""] + [u["username"] for u in users]
                 user_sel = st.selectbox("Usuario sugerido", user_opt)
 
-            fecha_txt = st.text_input(
-                "Fecha de necesidad (ej: hoy, 15/02/2026, proximo lunes)"
-            )
+            fecha_sel = st.date_input("Fecha de necesidad", format="DD/MM/YYYY")
             requester_user = st.selectbox("Solicitante", user_opt, index=1 if len(user_opt) > 1 else 0)
             submitted = st.form_submit_button("Crear Ticket")
 
@@ -1479,10 +1489,14 @@ def render_form_mode():
                     "subcategoria": subcat_sel or None,
                     "prioridad": prio_sel or None,
                     "usuario_sugerido": user_sel or None,
-                    "fecha_necesidad": fecha_txt or None,
+                    "fecha_necesidad": fecha_sel.strftime("%Y-%m-%d") if fecha_sel else None,
                     "fecha_necesidad_resuelta": None,
                 }
-                parsed = safe_parse_datetime(draft.get("fecha_necesidad"))
+                parsed = (
+                    datetime(fecha_sel.year, fecha_sel.month, fecha_sel.day, 17, 0, 0)
+                    if fecha_sel
+                    else None
+                )
                 draft["fecha_necesidad_resuelta"] = (
                     parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed else None
                 )
@@ -1507,53 +1521,92 @@ def render_form_mode():
                     st.warning(" | ".join(warns))
 
     with tray_tab:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            estado_opt = ["Todos"] + [e["nombre"] for e in estados]
-            estado_sel = st.selectbox("Estado", estado_opt, key="form_filter_estado")
-        with c2:
-            prio_opt = ["Todas"] + [p["nombre"] for p in prioridades]
-            prio_filter = st.selectbox("Prioridad", prio_opt, key="form_filter_prio")
-        with c3:
-            area_opt = ["Todas"] + [a["nombre"] for a in areas]
-            area_filter = st.selectbox("Area", area_opt, key="form_filter_area")
-        with c4:
-            q = st.text_input("Buscar", key="form_filter_query")
+        if "form_mode_view" not in st.session_state:
+            st.session_state.form_mode_view = "LISTA"
 
-        estado_id = next(
-            (e["id"] for e in estados if e["nombre"] == estado_sel), None
-        ) if estado_sel != "Todos" else None
-        prioridad_id = next(
-            (p["id"] for p in prioridades if p["nombre"] == prio_filter), None
-        ) if prio_filter != "Todas" else None
-        area_id = next(
-            (a["id"] for a in areas if a["nombre"] == area_filter), None
-        ) if area_filter != "Todas" else None
+        n1, n2, _ = st.columns([1, 1, 4], gap="small")
+        with n1:
+            cls = "active-nav" if st.session_state.form_mode_view == "LISTA" else ""
+            st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+            if st.button(
+                "LISTA",
+                key="form_nav_lista",
+                use_container_width=True,
+            ):
+                st.session_state.form_mode_view = "LISTA"
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+        with n2:
+            cls = "active-nav" if st.session_state.form_mode_view == "EDICION" else ""
+            st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+            if st.button(
+                "EDICION",
+                key="form_nav_edicion",
+                use_container_width=True,
+            ):
+                st.session_state.form_mode_view = "EDICION"
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        df = fetch_tickets_for_form(
-            {
-                "estado_id": estado_id,
-                "prioridad_id": prioridad_id,
-                "area_id": area_id,
-                "query": q.strip() if q else None,
-            }
-        )
-        if df.empty:
-            st.info("No hay tickets para los filtros seleccionados.")
+        if st.session_state.form_mode_view == "LISTA":
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                estado_opt = ["Todos"] + [e["nombre"] for e in estados]
+                estado_sel = st.selectbox("Estado", estado_opt, key="form_filter_estado")
+            with c2:
+                prio_opt = ["Todas"] + [p["nombre"] for p in prioridades]
+                prio_filter = st.selectbox("Prioridad", prio_opt, key="form_filter_prio")
+            with c3:
+                area_opt = ["Todas"] + [a["nombre"] for a in areas]
+                area_filter = st.selectbox("Area", area_opt, key="form_filter_area")
+            with c4:
+                q = st.text_input("Buscar", key="form_filter_query")
+
+            estado_id = next(
+                (e["id"] for e in estados if e["nombre"] == estado_sel), None
+            ) if estado_sel != "Todos" else None
+            prioridad_id = next(
+                (p["id"] for p in prioridades if p["nombre"] == prio_filter), None
+            ) if prio_filter != "Todas" else None
+            area_id = next(
+                (a["id"] for a in areas if a["nombre"] == area_filter), None
+            ) if area_filter != "Todas" else None
+
+            df = fetch_tickets_for_form(
+                {
+                    "estado_id": estado_id,
+                    "prioridad_id": prioridad_id,
+                    "area_id": area_id,
+                    "query": q.strip() if q else None,
+                },
+                limit=20,
+            )
+            if df.empty:
+                st.info("No hay tickets para los filtros seleccionados.")
+                return
+
+            st.caption("Mostrando hasta 20 tickets.")
+            st.dataframe(df, width="stretch", height=300)
+            ticket_ids = df["TicketId"].tolist()
+            default_idx = 0
+            if st.session_state.form_selected_ticket_id in ticket_ids:
+                default_idx = ticket_ids.index(st.session_state.form_selected_ticket_id)
+            selected_ticket_id = st.selectbox(
+                "Seleccionar Ticket",
+                ticket_ids,
+                index=default_idx,
+                key="form_selected_ticket",
+            )
+            if st.button("Abrir en edición", key="form_open_edit", type="primary"):
+                st.session_state.form_selected_ticket_id = selected_ticket_id
+                st.session_state.form_mode_view = "EDICION"
+                st.rerun()
             return
 
-        st.dataframe(df, width="stretch", height=280)
-        ticket_ids = df["TicketId"].tolist()
-        default_idx = 0
-        if st.session_state.form_selected_ticket_id in ticket_ids:
-            default_idx = ticket_ids.index(st.session_state.form_selected_ticket_id)
-        selected_ticket_id = st.selectbox(
-            "Seleccionar Ticket",
-            ticket_ids,
-            index=default_idx,
-            key="form_selected_ticket",
-        )
-        st.session_state.form_selected_ticket_id = selected_ticket_id
+        selected_ticket_id = st.session_state.form_selected_ticket_id
+        if not selected_ticket_id:
+            st.warning("No hay ticket seleccionado. Volvé a LISTA y elegí uno.")
+            return
 
         t = fetch_ticket_for_edit(selected_ticket_id)
         if not t:
@@ -1647,16 +1700,33 @@ def render_form_mode():
                     else 0,
                 )
 
-            need_by_raw = (
-                t.get("NeedByAt").strftime("%Y-%m-%d")
-                if t.get("NeedByAt")
-                else ""
+            has_need_by = t.get("NeedByAt") is not None
+            use_need_by = st.checkbox(
+                "Definir fecha de necesidad",
+                value=has_need_by,
+                key=f"edit_need_by_enabled_{selected_ticket_id}",
             )
-            need_by_text = st.text_input("Fecha necesidad", value=need_by_raw)
+            need_by_date = st.date_input(
+                "Fecha necesidad",
+                value=t.get("NeedByAt").date() if has_need_by else None,
+                format="DD/MM/YYYY",
+                disabled=not use_need_by,
+            )
             save_edit = st.form_submit_button("Guardar Cambios")
 
         if save_edit:
-            parsed = safe_parse_datetime(need_by_text) if need_by_text else None
+            parsed = (
+                datetime(
+                    need_by_date.year,
+                    need_by_date.month,
+                    need_by_date.day,
+                    17,
+                    0,
+                    0,
+                )
+                if (need_by_date and use_need_by)
+                else None
+            )
             updates = {
                 "Title": title_new,
                 "Description": desc_new,
@@ -1691,7 +1761,7 @@ def render_form_mode():
                 "NeedByAt": parsed if parsed else None,
             }
             update_ticket_from_form(selected_ticket_id, updates)
-            st.success("Ticket actualizado.")
+            st.rerun()
 
         st.markdown("#### Seguimiento / Comentarios")
         try:
@@ -1723,7 +1793,13 @@ st.markdown(
     """
     <div class="taranto-header">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
-            <div style="min-width:160px;"><p class="taranto-logo">TARANTO</p></div>
+            <div style="min-width:160px;">"""
+    + (
+        f'<img src="data:image/png;base64,{taranto_logo_b64}" style="height:48px; width:auto;" alt="Taranto">'
+        if taranto_logo_b64
+        else '<p class="taranto-logo">TARANTO</p>'
+    )
+    + """</div>
             <div style="flex:1;">
                 <h1 class="taranto-title">GESTAR <span class="taranto-subtitle">| Gestión de Solicitudes</span></h1>
             </div>
