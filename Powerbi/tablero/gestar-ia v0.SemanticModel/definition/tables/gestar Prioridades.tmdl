@@ -1,0 +1,40 @@
+table 'gestar Prioridades'
+	lineageTag: 06bd09ad-fe1e-4cba-8765-0a567deea248
+
+	column PrioridadId
+		dataType: int64
+		formatString: 0
+		lineageTag: 9d63f90a-b2b2-4deb-b875-19ead5a9fce9
+		summarizeBy: none
+		sourceColumn: PrioridadId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nombre
+		dataType: string
+		lineageTag: 661db04e-ce0a-437f-93e5-168b4428556c
+		summarizeBy: none
+		sourceColumn: Nombre
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nivel
+		dataType: int64
+		formatString: 0
+		lineageTag: 19efcf2c-33d1-48c7-bea7-9db4523274a7
+		summarizeBy: none
+		sourceColumn: Nivel
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Prioridades' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Prioridades = Origen{[Schema="gestar",Item="Prioridades"]}[Data]
+				in
+				    gestar_Prioridades
+
+	annotation PBI_ResultType = Table
+

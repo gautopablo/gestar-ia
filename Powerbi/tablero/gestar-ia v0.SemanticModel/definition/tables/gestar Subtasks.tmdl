@@ -1,0 +1,149 @@
+table 'gestar Subtasks'
+	lineageTag: 208c5b77-60c7-4175-98e3-c68845ca3e1f
+
+	column SubtaskId
+		dataType: int64
+		formatString: 0
+		lineageTag: b28dc614-947e-44f2-acd6-f4e40cc7409e
+		summarizeBy: count
+		sourceColumn: SubtaskId
+
+		annotation SummarizationSetBy = Automatic
+
+	column TicketId
+		dataType: int64
+		formatString: 0
+		lineageTag: 54e34dd9-c8f0-40b2-b26a-048bab866bd4
+		summarizeBy: none
+		sourceColumn: TicketId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Title
+		dataType: string
+		lineageTag: e9f3d877-2cbb-4537-b452-e1a23e54773b
+		summarizeBy: none
+		sourceColumn: Title
+
+		annotation SummarizationSetBy = Automatic
+
+	column Description
+		dataType: string
+		lineageTag: fdac51e1-71ea-4a97-9254-2422913d66af
+		summarizeBy: none
+		sourceColumn: Description
+
+		annotation SummarizationSetBy = Automatic
+
+	column AssigneeId
+		dataType: int64
+		formatString: 0
+		lineageTag: 5241302d-a5c5-4d9e-a2b3-5a4bf08c35f9
+		summarizeBy: count
+		sourceColumn: AssigneeId
+
+		annotation SummarizationSetBy = Automatic
+
+	column EstadoId
+		dataType: int64
+		formatString: 0
+		lineageTag: a7283642-2100-4595-89fb-887b4cd1fb77
+		summarizeBy: count
+		sourceColumn: EstadoId
+
+		annotation SummarizationSetBy = Automatic
+
+	column NeedByAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 91deda43-0d9b-47df-a296-2780385680f8
+		summarizeBy: none
+		sourceColumn: NeedByAt
+
+		variation Variación
+			isDefault
+			relationship: d221ae73-a1ac-4fe1-84d1-024a6cb9183a
+			defaultHierarchy: LocalDateTable_0aaa1062-004d-4e6d-acf0-798fd163ff87.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column CompletedAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 82d00582-5f0c-4957-a161-1ef50261db78
+		summarizeBy: none
+		sourceColumn: CompletedAt
+
+		variation Variación
+			isDefault
+			relationship: 4eab6bf7-30d7-4515-b252-730e3a9d2c00
+			defaultHierarchy: LocalDateTable_22fcf55f-f8d1-4421-aca3-95afc231d765.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column SortOrder
+		dataType: int64
+		formatString: 0
+		lineageTag: bd1b9760-f7e9-4803-a963-4a136bf1070e
+		summarizeBy: sum
+		sourceColumn: SortOrder
+
+		annotation SummarizationSetBy = Automatic
+
+	column CreatedAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 99722abc-f20c-4572-8daf-26d42d2bef2a
+		summarizeBy: none
+		sourceColumn: CreatedAt
+
+		variation Variación
+			isDefault
+			relationship: 4554a8d2-95aa-4226-96d5-fc72ae3d3ac5
+			defaultHierarchy: LocalDateTable_cccafa2d-cfeb-44f7-ad59-ab83c8972eb6.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column CreatedBy
+		dataType: int64
+		formatString: 0
+		lineageTag: 1a50a2d4-27be-4a8c-8c26-d8301034ca01
+		summarizeBy: sum
+		sourceColumn: CreatedBy
+
+		annotation SummarizationSetBy = Automatic
+
+	column UpdatedAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 53a1efe6-afdd-4233-89e2-c566a5cf9ce1
+		summarizeBy: none
+		sourceColumn: UpdatedAt
+
+		variation Variación
+			isDefault
+			relationship: de9d8855-5360-4b69-ab76-99163a1274ef
+			defaultHierarchy: LocalDateTable_6b54546b-4035-4287-ad2b-2495a647ae91.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column UpdatedBy
+		dataType: int64
+		formatString: 0
+		lineageTag: 6b8620ba-36ab-4b32-b2bd-c45b3a9c0bb3
+		summarizeBy: sum
+		sourceColumn: UpdatedBy
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Subtasks' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Subtasks = Origen{[Schema="gestar",Item="Subtasks"]}[Data]
+				in
+				    gestar_Subtasks
+
+	annotation PBI_ResultType = Table
+

@@ -1,0 +1,197 @@
+table 'gestar Tickets'
+	lineageTag: e06e8374-7a5f-4d87-88ec-0e1f13d4b57c
+
+	column TicketId
+		dataType: int64
+		formatString: 0
+		lineageTag: e317bf96-ac0a-4b39-bfb2-0cb5f758c5d6
+		summarizeBy: none
+		sourceColumn: TicketId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Title
+		dataType: string
+		lineageTag: e8be6b02-043b-4782-a083-16d77e8b726d
+		summarizeBy: none
+		sourceColumn: Title
+
+		annotation SummarizationSetBy = Automatic
+
+	column Description
+		dataType: string
+		lineageTag: d68bbee6-d10a-4063-b623-a77b650bba2b
+		summarizeBy: none
+		sourceColumn: Description
+
+		annotation SummarizationSetBy = Automatic
+
+	column RequesterId
+		dataType: int64
+		formatString: 0
+		lineageTag: 2168e7be-752c-43d6-89b2-52e01c16ffb4
+		summarizeBy: count
+		sourceColumn: RequesterId
+
+		annotation SummarizationSetBy = Automatic
+
+	column SuggestedAssigneeId
+		dataType: int64
+		formatString: 0
+		lineageTag: d7a9ba8e-a368-4ff6-8ba0-dafb77e272fa
+		summarizeBy: count
+		sourceColumn: SuggestedAssigneeId
+
+		annotation SummarizationSetBy = Automatic
+
+	column AssigneeId
+		dataType: int64
+		formatString: 0
+		lineageTag: ae614c39-37d6-4c08-b2b2-4076c0717465
+		summarizeBy: none
+		sourceColumn: AssigneeId
+
+		annotation SummarizationSetBy = Automatic
+
+	column PlantaId
+		dataType: int64
+		formatString: 0
+		lineageTag: a7280511-3605-46dc-9291-180df8da37ae
+		summarizeBy: none
+		sourceColumn: PlantaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column AreaId
+		dataType: int64
+		formatString: 0
+		lineageTag: 05b5f935-bc3e-4bba-b4cd-5dff7cfc4bef
+		summarizeBy: none
+		sourceColumn: AreaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column CategoriaId
+		dataType: int64
+		formatString: 0
+		lineageTag: 34295f07-f7aa-494e-983d-6294690fb0eb
+		summarizeBy: none
+		sourceColumn: CategoriaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column SubcategoriaId
+		dataType: int64
+		formatString: 0
+		lineageTag: 4a9a65bd-ab3c-4fae-afae-44acf1253457
+		summarizeBy: none
+		sourceColumn: SubcategoriaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column PrioridadId
+		dataType: int64
+		formatString: 0
+		lineageTag: 7763501f-50fd-4bd4-9668-e05fc33cce8e
+		summarizeBy: none
+		sourceColumn: PrioridadId
+
+		annotation SummarizationSetBy = Automatic
+
+	column EstadoId
+		dataType: int64
+		formatString: 0
+		lineageTag: c01b888e-4d86-49e1-9534-3bddc3094af2
+		summarizeBy: none
+		sourceColumn: EstadoId
+
+		annotation SummarizationSetBy = Automatic
+
+	column ConfidenceScore
+		dataType: double
+		lineageTag: 516467e0-7583-4e41-9a81-d3c3f28e901d
+		summarizeBy: sum
+		sourceColumn: ConfidenceScore
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column OriginalPrompt
+		dataType: string
+		lineageTag: 13c9ec06-27ba-48a4-af5e-7b7a00ec5737
+		summarizeBy: none
+		sourceColumn: OriginalPrompt
+
+		annotation SummarizationSetBy = Automatic
+
+	column AiProcessingTime
+		dataType: int64
+		formatString: 0
+		lineageTag: b2309914-eb96-4228-bd08-fb0fa2abe10d
+		summarizeBy: sum
+		sourceColumn: AiProcessingTime
+
+		annotation SummarizationSetBy = Automatic
+
+	column ConversationId
+		dataType: string
+		lineageTag: dd6901b7-4400-4dfd-8218-888cc32c4da3
+		summarizeBy: none
+		sourceColumn: ConversationId
+
+		annotation SummarizationSetBy = Automatic
+
+	column NeedByAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 0e01fba1-f0af-4179-9768-b1fa791ac189
+		summarizeBy: none
+		sourceColumn: NeedByAt
+
+		variation Variación
+			isDefault
+			relationship: ca30beab-2203-4778-9fdb-7cd081f9926e
+			defaultHierarchy: LocalDateTable_cf92f2eb-3d45-4061-93e5-019022faac96.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column CreatedAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 553d33f8-c639-4f6c-9558-f95f9c75ee9e
+		summarizeBy: none
+		sourceColumn: CreatedAt
+
+		variation Variación
+			isDefault
+			relationship: eb65f473-d57e-4f13-9156-7cc57c6d590f
+			defaultHierarchy: LocalDateTable_c46a88f4-d73b-4b6f-9c52-a3ccf7429230.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column UpdatedAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 0be5cfde-8f3e-4a4a-99eb-8f7cfde107fa
+		summarizeBy: none
+		sourceColumn: UpdatedAt
+
+		variation Variación
+			isDefault
+			relationship: 505dfdad-1f9d-4dc4-aa0e-d280913a23de
+			defaultHierarchy: LocalDateTable_f24ab1d0-8d3d-49ee-bab2-594895cbea60.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Tickets' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Tickets = Origen{[Schema="gestar",Item="Tickets"]}[Data]
+				in
+				    gestar_Tickets
+
+	annotation PBI_ResultType = Table
+

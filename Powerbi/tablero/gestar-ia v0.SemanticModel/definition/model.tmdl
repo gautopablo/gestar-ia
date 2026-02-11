@@ -1,0 +1,41 @@
+model Model
+	culture: es-AR
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	sourceQueryCulture: es-AR
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+annotation __PBI_TimeIntelligenceEnabled = 1
+
+annotation PBI_QueryOrder = ["sys database_firewall_rules","gestar Areas","gestar Categorias","gestar Tickets","gestar Divisiones","gestar Users","gestar Estados","gestar Plantas","gestar Prioridades","gestar Subcategorias","gestar Subtasks","gestar TicketLogs"]
+
+annotation PBI_ProTooling = ["DevMode"]
+
+ref table 'sys database_firewall_rules'
+ref table DateTableTemplate_b2519e65-20ca-4fb6-b2bc-23f403710a14
+ref table LocalDateTable_0337b4ee-b423-44e6-a703-6297333f0627
+ref table LocalDateTable_c4ee5106-1ce2-485c-aead-7b47d4f226db
+ref table 'gestar Areas'
+ref table 'gestar Categorias'
+ref table 'gestar Tickets'
+ref table LocalDateTable_cf92f2eb-3d45-4061-93e5-019022faac96
+ref table LocalDateTable_c46a88f4-d73b-4b6f-9c52-a3ccf7429230
+ref table LocalDateTable_f24ab1d0-8d3d-49ee-bab2-594895cbea60
+ref table 'gestar Divisiones'
+ref table 'gestar Users'
+ref table LocalDateTable_0e49bf75-4e68-4a1f-8f42-2a2fdbdfa0d8
+ref table 'gestar Estados'
+ref table 'gestar Plantas'
+ref table 'gestar Prioridades'
+ref table 'gestar Subcategorias'
+ref table 'gestar Subtasks'
+ref table LocalDateTable_0aaa1062-004d-4e6d-acf0-798fd163ff87
+ref table LocalDateTable_22fcf55f-f8d1-4421-aca3-95afc231d765
+ref table LocalDateTable_cccafa2d-cfeb-44f7-ad59-ab83c8972eb6
+ref table LocalDateTable_6b54546b-4035-4287-ad2b-2495a647ae91
+ref table 'gestar TicketLogs'
+ref table LocalDateTable_44b5cc22-679d-434e-97ac-9d285888f54d
+
+ref cultureInfo es-AR
+

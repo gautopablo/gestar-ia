@@ -1,0 +1,185 @@
+relationship ca115eb6-a9dd-4dad-a353-2161f1812c43
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'sys database_firewall_rules'.create_date
+	toColumn: LocalDateTable_0337b4ee-b423-44e6-a703-6297333f0627.Date
+
+relationship 8e4de334-cfb3-4a54-b0c6-9278493b8a6b
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'sys database_firewall_rules'.modify_date
+	toColumn: LocalDateTable_c4ee5106-1ce2-485c-aead-7b47d4f226db.Date
+
+relationship ca30beab-2203-4778-9fdb-7cd081f9926e
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Tickets'.NeedByAt
+	toColumn: LocalDateTable_cf92f2eb-3d45-4061-93e5-019022faac96.Date
+
+relationship eb65f473-d57e-4f13-9156-7cc57c6d590f
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Tickets'.CreatedAt
+	toColumn: LocalDateTable_c46a88f4-d73b-4b6f-9c52-a3ccf7429230.Date
+
+relationship 505dfdad-1f9d-4dc4-aa0e-d280913a23de
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Tickets'.UpdatedAt
+	toColumn: LocalDateTable_f24ab1d0-8d3d-49ee-bab2-594895cbea60.Date
+
+relationship b91209dc-6064-4b15-a894-3cc24554e05c
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Users'.CreatedAt
+	toColumn: LocalDateTable_0e49bf75-4e68-4a1f-8f42-2a2fdbdfa0d8.Date
+
+relationship d221ae73-a1ac-4fe1-84d1-024a6cb9183a
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Subtasks'.NeedByAt
+	toColumn: LocalDateTable_0aaa1062-004d-4e6d-acf0-798fd163ff87.Date
+
+relationship 4eab6bf7-30d7-4515-b252-730e3a9d2c00
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Subtasks'.CompletedAt
+	toColumn: LocalDateTable_22fcf55f-f8d1-4421-aca3-95afc231d765.Date
+
+relationship 4554a8d2-95aa-4226-96d5-fc72ae3d3ac5
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Subtasks'.CreatedAt
+	toColumn: LocalDateTable_cccafa2d-cfeb-44f7-ad59-ab83c8972eb6.Date
+
+relationship de9d8855-5360-4b69-ab76-99163a1274ef
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar Subtasks'.UpdatedAt
+	toColumn: LocalDateTable_6b54546b-4035-4287-ad2b-2495a647ae91.Date
+
+relationship fda2132e-7f80-4c97-89bd-6110443ea37e
+	joinOnDateBehavior: datePartOnly
+	fromColumn: 'gestar TicketLogs'.ChangedAt
+	toColumn: LocalDateTable_44b5cc22-679d-434e-97ac-9d285888f54d.Date
+
+relationship 3fba2dde-9594-49a1-8f34-95a3a98b1a14
+	fromColumn: 'gestar Areas'.DivisionId
+	toColumn: 'gestar Divisiones'.DivisionId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 0ed43c99-f54d-4e41-8555-f1905b120656
+	fromColumn: 'gestar Tickets'.AreaId
+	toColumn: 'gestar Areas'.AreaId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 25f44088-8135-40fe-9660-db670dcb46b6
+	fromColumn: 'gestar Tickets'.CategoriaId
+	toColumn: 'gestar Categorias'.CategoriaId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 9d49e9ef-89d6-4720-a43b-ebc1d5d5c4c4
+	fromColumn: 'gestar Tickets'.EstadoId
+	toColumn: 'gestar Estados'.EstadoId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 0b28894e-0a7a-4499-bba1-d2aab5f49fda
+	fromColumn: 'gestar Tickets'.PlantaId
+	toColumn: 'gestar Plantas'.PlantaId
+
+	annotation PBI_IsFromSource = FS
+
+relationship b2cea66f-a015-41f1-896a-1f775e9f1bd7
+	fromColumn: 'gestar Tickets'.PrioridadId
+	toColumn: 'gestar Prioridades'.PrioridadId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 6748a330-8ad7-4bb2-b421-09a84e81679d
+	fromColumn: 'gestar Tickets'.SubcategoriaId
+	toColumn: 'gestar Subcategorias'.SubcategoriaId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 678a6ae9-b104-487e-b89b-664b5f16f8cb
+	fromColumn: 'gestar Tickets'.AssigneeId
+	toColumn: 'gestar Users'.UserId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 77c6e533-21b4-460d-bbff-b09c6d1cd193
+	isActive: false
+	fromColumn: 'gestar Tickets'.RequesterId
+	toColumn: 'gestar Users'.UserId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 7b7c7b50-7422-4704-975d-22d5b2867031
+	isActive: false
+	fromColumn: 'gestar Tickets'.SuggestedAssigneeId
+	toColumn: 'gestar Users'.UserId
+
+	annotation PBI_IsFromSource = FS
+
+relationship d5181bd2-59da-4042-b87f-8c78e1f3bb59
+	isActive: false
+	fromColumn: 'gestar Users'.AreaId
+	toColumn: 'gestar Areas'.AreaId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 011ced27-5ab4-47d9-925a-b9aec7a9454d
+	isActive: false
+	fromColumn: 'gestar Users'.DivisionId
+	toColumn: 'gestar Divisiones'.DivisionId
+
+	annotation PBI_IsFromSource = FS
+
+relationship a86cbe7d-a9f7-482f-835b-f511eb8d27ce
+	isActive: false
+	fromColumn: 'gestar Subcategorias'.CategoriaId
+	toColumn: 'gestar Categorias'.CategoriaId
+
+	annotation PBI_IsFromSource = FS
+
+relationship bd658b1e-e868-4738-b57f-2c49412cc190
+	fromColumn: 'gestar Subtasks'.TicketId
+	toColumn: 'gestar Tickets'.TicketId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 22d7e2b9-fcc9-49a0-96fa-1f4bfa7cec4a
+	isActive: false
+	fromColumn: 'gestar Subtasks'.AssigneeId
+	toColumn: 'gestar Users'.UserId
+
+	annotation PBI_IsFromSource = FS
+
+relationship ee159f92-004c-4539-b6c6-ab65724b33dc
+	isActive: false
+	fromColumn: 'gestar Subtasks'.CreatedBy
+	toColumn: 'gestar Users'.UserId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 15cac1d2-881c-4500-9922-d4265f147d05
+	isActive: false
+	fromColumn: 'gestar Subtasks'.UpdatedBy
+	toColumn: 'gestar Users'.UserId
+
+	annotation PBI_IsFromSource = FS
+
+relationship c504a962-a800-424a-b938-f1be35ec231a
+	isActive: false
+	fromColumn: 'gestar Subtasks'.EstadoId
+	toColumn: 'gestar Estados'.EstadoId
+
+	annotation PBI_IsFromSource = FS
+
+relationship ab1c53c2-35e5-42f5-a3de-114d6065115b
+	fromColumn: 'gestar TicketLogs'.TicketId
+	toColumn: 'gestar Tickets'.TicketId
+
+	annotation PBI_IsFromSource = FS
+
+relationship 2929c399-8c3e-46e4-9e88-53474982a8bf
+	isActive: false
+	fromColumn: 'gestar TicketLogs'.UserId
+	toColumn: 'gestar Users'.UserId
+
+	annotation PBI_IsFromSource = FS
+

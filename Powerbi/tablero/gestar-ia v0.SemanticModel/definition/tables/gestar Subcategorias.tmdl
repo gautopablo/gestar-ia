@@ -1,0 +1,49 @@
+table 'gestar Subcategorias'
+	lineageTag: cfdc9c7e-f5cf-44f9-8465-26821eb222f7
+
+	column SubcategoriaId
+		dataType: int64
+		formatString: 0
+		lineageTag: 6f482201-94c1-4db0-b169-4cf52748a9ce
+		summarizeBy: none
+		sourceColumn: SubcategoriaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nombre
+		dataType: string
+		lineageTag: 10a50eec-07f6-4f03-9576-4313813dab78
+		summarizeBy: none
+		sourceColumn: Nombre
+
+		annotation SummarizationSetBy = Automatic
+
+	column CategoriaId
+		dataType: int64
+		formatString: 0
+		lineageTag: d738218f-047b-4fc9-ae8e-2bc518e00ea3
+		summarizeBy: none
+		sourceColumn: CategoriaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Activo
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: d53687c1-01eb-4d46-a35a-4cb0e9d6cf87
+		summarizeBy: none
+		sourceColumn: Activo
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Subcategorias' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Subcategorias = Origen{[Schema="gestar",Item="Subcategorias"]}[Data]
+				in
+				    gestar_Subcategorias
+
+	annotation PBI_ResultType = Table
+

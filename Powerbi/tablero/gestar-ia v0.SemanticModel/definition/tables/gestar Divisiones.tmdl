@@ -1,0 +1,40 @@
+table 'gestar Divisiones'
+	lineageTag: b9c767f4-fc50-4aa3-9436-f9284e648a0d
+
+	column DivisionId
+		dataType: int64
+		formatString: 0
+		lineageTag: ab9ca960-f2c9-44d3-a178-c71616a3ef03
+		summarizeBy: none
+		sourceColumn: DivisionId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nombre
+		dataType: string
+		lineageTag: bc9f6e5e-a1ec-48c0-9dc4-abc782dee1f7
+		summarizeBy: none
+		sourceColumn: Nombre
+
+		annotation SummarizationSetBy = Automatic
+
+	column Activo
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: c60e1b51-8e63-4e0e-b130-963a00cb4a33
+		summarizeBy: none
+		sourceColumn: Activo
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Divisiones' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Divisiones = Origen{[Schema="gestar",Item="Divisiones"]}[Data]
+				in
+				    gestar_Divisiones
+
+	annotation PBI_ResultType = Table
+

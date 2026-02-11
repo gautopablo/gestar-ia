@@ -1,0 +1,178 @@
+{
+  "version": "1.1.0",
+  "diagrams": [
+    {
+      "ordinal": 0,
+      "scrollPosition": {
+        "x": 0,
+        "y": 2
+      },
+      "nodes": [
+        {
+          "location": {
+            "x": 624.36835865566889,
+            "y": 894.26337299095826
+          },
+          "nodeIndex": "gestar Areas",
+          "nodeLineageTag": "20903cdb-6a56-4bb0-b09b-f89cc705abf5",
+          "size": {
+            "height": 176,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 930.45256462434361,
+            "y": 80.287789680577589
+          },
+          "nodeIndex": "gestar Categorias",
+          "nodeLineageTag": "0e448bea-6be6-4576-9089-071ec248afce",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 334.50701887327421,
+            "y": 1085.7018929572564
+          },
+          "nodeIndex": "gestar Divisiones",
+          "nodeLineageTag": "b9c767f4-fc50-4aa3-9436-f9284e648a0d",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 339.54047626586419,
+            "y": 167.47318368039589
+          },
+          "nodeIndex": "gestar Estados",
+          "nodeLineageTag": "d5a8e986-3c57-4f11-a583-b740044374e1",
+          "size": {
+            "height": 128,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 1203.7929674372258,
+            "y": 658.573000611676
+          },
+          "nodeIndex": "gestar Plantas",
+          "nodeLineageTag": "0777c7f5-656b-4d29-a3f9-c58145e4411a",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 1158.3525509755395,
+            "y": 286.49276839327331
+          },
+          "nodeIndex": "gestar Prioridades",
+          "nodeLineageTag": "06bd09ad-fe1e-4cba-8765-0a567deea248",
+          "size": {
+            "height": 152,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 629.46124841287633,
+            "y": -50
+          },
+          "nodeIndex": "gestar Subcategorias",
+          "nodeLineageTag": "cfdc9c7e-f5cf-44f9-8465-26821eb222f7",
+          "size": {
+            "height": 176,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 50,
+            "y": 256.52852447568739
+          },
+          "nodeIndex": "gestar Subtasks",
+          "nodeLineageTag": "208c5b77-60c7-4175-98e3-c68845ca3e1f",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 913.85776458601151,
+            "y": 758.0301538258318
+          },
+          "nodeIndex": "gestar TicketLogs",
+          "nodeLineageTag": "3ecbaf13-eda2-43ea-b0c7-e8ef144e71d0",
+          "size": {
+            "height": 272,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 626.245113632998,
+            "y": 271.92387467184915
+          },
+          "nodeIndex": "gestar Tickets",
+          "nodeLineageTag": "e06e8374-7a5f-4d87-88ec-0e1f13d4b57c",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 336.40680697362245,
+            "y": 622.40089256448073
+          },
+          "nodeIndex": "gestar Users",
+          "nodeLineageTag": "ddc6d99f-dbe5-471d-a0ef-bde210ac38d4",
+          "size": {
+            "height": 272,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 1437.7929674372258,
+            "y": 531.8509464786282
+          },
+          "nodeIndex": "sys database_firewall_rules",
+          "nodeLineageTag": "50ae852b-5a5d-4dd1-8444-339203feb12b",
+          "size": {
+            "height": 224,
+            "width": 234
+          },
+          "zIndex": 0
+        }
+      ],
+      "name": "Todas las tablas",
+      "zoomValue": 100,
+      "pinKeyFieldsToTop": false,
+      "showExtraHeaderInfo": false,
+      "hideKeyFieldsWhenCollapsed": false,
+      "tablesLocked": false
+    }
+  ],
+  "selectedDiagram": "Todas las tablas",
+  "defaultDiagram": "Todas las tablas"
+}

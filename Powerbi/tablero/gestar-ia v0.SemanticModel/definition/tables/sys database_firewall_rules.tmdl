@@ -1,0 +1,75 @@
+table 'sys database_firewall_rules'
+	lineageTag: 50ae852b-5a5d-4dd1-8444-339203feb12b
+
+	column id
+		dataType: int64
+		formatString: 0
+		lineageTag: 1460a0c3-3224-40df-9bd9-73102bf4ec7c
+		summarizeBy: sum
+		sourceColumn: id
+
+		annotation SummarizationSetBy = Automatic
+
+	column name
+		dataType: string
+		lineageTag: 6b9a963d-27d4-47b2-90d8-af8411fc3950
+		summarizeBy: none
+		sourceColumn: name
+
+		annotation SummarizationSetBy = Automatic
+
+	column start_ip_address
+		dataType: string
+		lineageTag: 08ade0b6-0260-441d-86d4-2515daaaaec3
+		summarizeBy: none
+		sourceColumn: start_ip_address
+
+		annotation SummarizationSetBy = Automatic
+
+	column end_ip_address
+		dataType: string
+		lineageTag: c118e91e-81aa-467d-b449-ea7780a4588c
+		summarizeBy: none
+		sourceColumn: end_ip_address
+
+		annotation SummarizationSetBy = Automatic
+
+	column create_date
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 63180c49-99c1-416f-a6ec-cbce6e686c5d
+		summarizeBy: none
+		sourceColumn: create_date
+
+		variation Variación
+			isDefault
+			relationship: ca115eb6-a9dd-4dad-a353-2161f1812c43
+			defaultHierarchy: LocalDateTable_0337b4ee-b423-44e6-a703-6297333f0627.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column modify_date
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 04c6cde6-66a0-43c1-9603-3d54d71bc970
+		summarizeBy: none
+		sourceColumn: modify_date
+
+		variation Variación
+			isDefault
+			relationship: 8e4de334-cfb3-4a54-b0c6-9278493b8a6b
+			defaultHierarchy: LocalDateTable_c4ee5106-1ce2-485c-aead-7b47d4f226db.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'sys database_firewall_rules' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    sys_database_firewall_rules = Origen{[Schema="sys",Item="database_firewall_rules"]}[Data]
+				in
+				    sys_database_firewall_rules
+
+	annotation PBI_ResultType = Table
+

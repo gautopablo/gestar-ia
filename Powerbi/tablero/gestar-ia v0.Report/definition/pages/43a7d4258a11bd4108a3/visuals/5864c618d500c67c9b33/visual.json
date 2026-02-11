@@ -1,0 +1,100 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
+  "name": "5864c618d500c67c9b33",
+  "position": {
+    "x": 1129,
+    "y": 9,
+    "z": 1,
+    "height": 683,
+    "width": 151
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "gestar Users"
+                    }
+                  },
+                  "Property": "UserId"
+                }
+              },
+              "queryRef": "gestar Users.UserId",
+              "nativeQueryRef": "UserId"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "gestar Users"
+                    }
+                  },
+                  "Property": "Username"
+                }
+              },
+              "queryRef": "gestar Users.Username",
+              "nativeQueryRef": "Username"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "gestar Users"
+                  }
+                },
+                "Property": "Username"
+              }
+            },
+            "direction": "Ascending"
+          }
+        ]
+      }
+    },
+    "drillFilterOtherVisuals": true
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "1cdd31913f7ed2936355",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "gestar Users"
+              }
+            },
+            "Property": "UserId"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "5f57be2234d4e900005e",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "gestar Users"
+              }
+            },
+            "Property": "Username"
+          }
+        },
+        "type": "Categorical"
+      }
+    ]
+  }
+}

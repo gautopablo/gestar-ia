@@ -1,0 +1,88 @@
+table 'gestar Users'
+	lineageTag: ddc6d99f-dbe5-471d-a0ef-bde210ac38d4
+
+	column UserId
+		dataType: int64
+		formatString: 0
+		lineageTag: 8fcbb2b3-2b58-43d9-8625-4da7784e9a7e
+		summarizeBy: none
+		sourceColumn: UserId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Username
+		dataType: string
+		lineageTag: e058c2a5-f926-4dc9-80d7-a70799703a5a
+		summarizeBy: none
+		sourceColumn: Username
+
+		annotation SummarizationSetBy = Automatic
+
+	column Email
+		dataType: string
+		lineageTag: 26b62022-137d-4726-a874-00370e92ee21
+		summarizeBy: none
+		sourceColumn: Email
+
+		annotation SummarizationSetBy = Automatic
+
+	column Role
+		dataType: string
+		lineageTag: 7b094e11-63f1-4b23-a251-6d95c66d239b
+		summarizeBy: none
+		sourceColumn: Role
+
+		annotation SummarizationSetBy = Automatic
+
+	column Active
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: f125df47-6f69-4da5-969e-9aa9425ceeb7
+		summarizeBy: none
+		sourceColumn: Active
+
+		annotation SummarizationSetBy = Automatic
+
+	column CreatedAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: be137f7f-0701-4425-85c4-db5b06a99529
+		summarizeBy: none
+		sourceColumn: CreatedAt
+
+		variation Variación
+			isDefault
+			relationship: b91209dc-6064-4b15-a894-3cc24554e05c
+			defaultHierarchy: LocalDateTable_0e49bf75-4e68-4a1f-8f42-2a2fdbdfa0d8.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	column AreaId
+		dataType: int64
+		formatString: 0
+		lineageTag: d901355b-d3eb-4244-a4bf-350c02d741cf
+		summarizeBy: count
+		sourceColumn: AreaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column DivisionId
+		dataType: int64
+		formatString: 0
+		lineageTag: 9ffe1be0-adab-4c0f-8da3-2871240872de
+		summarizeBy: count
+		sourceColumn: DivisionId
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Users' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Users = Origen{[Schema="gestar",Item="Users"]}[Data]
+				in
+				    gestar_Users
+
+	annotation PBI_ResultType = Table
+

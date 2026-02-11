@@ -1,0 +1,49 @@
+table 'gestar Areas'
+	lineageTag: 20903cdb-6a56-4bb0-b09b-f89cc705abf5
+
+	column AreaId
+		dataType: int64
+		formatString: 0
+		lineageTag: d6158778-68c2-4524-8f0d-338d82cfaa7d
+		summarizeBy: none
+		sourceColumn: AreaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nombre
+		dataType: string
+		lineageTag: c5a50162-f4f3-4d84-b796-d99c34b90bc6
+		summarizeBy: none
+		sourceColumn: Nombre
+
+		annotation SummarizationSetBy = Automatic
+
+	column DivisionId
+		dataType: int64
+		formatString: 0
+		lineageTag: e228ba3a-20f0-4a2d-a69a-53b786994229
+		summarizeBy: none
+		sourceColumn: DivisionId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Activo
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 2e0d87d6-cf4b-427c-9775-34caeace91fe
+		summarizeBy: none
+		sourceColumn: Activo
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Areas' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Areas = Origen{[Schema="gestar",Item="Areas"]}[Data]
+				in
+				    gestar_Areas
+
+	annotation PBI_ResultType = Table
+

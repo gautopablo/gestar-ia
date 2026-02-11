@@ -1,0 +1,100 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.5.0/schema.json",
+  "name": "5a6cd7a82da00570ac33",
+  "position": {
+    "x": 29,
+    "y": 9,
+    "z": 0,
+    "height": 683,
+    "width": 647
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "gestar Tickets"
+                    }
+                  },
+                  "Property": "TicketId"
+                }
+              },
+              "queryRef": "gestar Tickets.TicketId",
+              "nativeQueryRef": "TicketId"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "gestar Tickets"
+                    }
+                  },
+                  "Property": "Title"
+                }
+              },
+              "queryRef": "gestar Tickets.Title",
+              "nativeQueryRef": "Title"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "gestar Tickets"
+                  }
+                },
+                "Property": "TicketId"
+              }
+            },
+            "direction": "Descending"
+          }
+        ]
+      }
+    },
+    "drillFilterOtherVisuals": true
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "86813529673bf8efa34f",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "gestar Tickets"
+              }
+            },
+            "Property": "TicketId"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "1e7c69c40efb5a31d25d",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "gestar Tickets"
+              }
+            },
+            "Property": "Title"
+          }
+        },
+        "type": "Categorical"
+      }
+    ]
+  }
+}

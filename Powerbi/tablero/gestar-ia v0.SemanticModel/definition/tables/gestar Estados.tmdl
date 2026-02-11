@@ -1,0 +1,31 @@
+table 'gestar Estados'
+	lineageTag: d5a8e986-3c57-4f11-a583-b740044374e1
+
+	column EstadoId
+		dataType: int64
+		formatString: 0
+		lineageTag: a321f9f9-23e2-4293-bf80-98eb99fdcef8
+		summarizeBy: none
+		sourceColumn: EstadoId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nombre
+		dataType: string
+		lineageTag: 2c47c45b-c55a-48b0-805c-edef352436cf
+		summarizeBy: none
+		sourceColumn: Nombre
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Estados' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Estados = Origen{[Schema="gestar",Item="Estados"]}[Data]
+				in
+				    gestar_Estados
+
+	annotation PBI_ResultType = Table
+

@@ -1,0 +1,40 @@
+table 'gestar Categorias'
+	lineageTag: 0e448bea-6be6-4576-9089-071ec248afce
+
+	column CategoriaId
+		dataType: int64
+		formatString: 0
+		lineageTag: 7b6542ba-448b-45e9-b1bb-eb4dba7e268e
+		summarizeBy: none
+		sourceColumn: CategoriaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nombre
+		dataType: string
+		lineageTag: cd67cae4-f8a9-4cde-9b8b-c0089dccfdc2
+		summarizeBy: none
+		sourceColumn: Nombre
+
+		annotation SummarizationSetBy = Automatic
+
+	column Activo
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: fe21d111-a08e-4cdf-bf96-3ede0b9040e7
+		summarizeBy: none
+		sourceColumn: Activo
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Categorias' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Categorias = Origen{[Schema="gestar",Item="Categorias"]}[Data]
+				in
+				    gestar_Categorias
+
+	annotation PBI_ResultType = Table
+

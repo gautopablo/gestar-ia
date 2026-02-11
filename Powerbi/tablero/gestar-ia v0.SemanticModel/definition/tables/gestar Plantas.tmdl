@@ -1,0 +1,40 @@
+table 'gestar Plantas'
+	lineageTag: 0777c7f5-656b-4d29-a3f9-c58145e4411a
+
+	column PlantaId
+		dataType: int64
+		formatString: 0
+		lineageTag: 61ba463d-910e-4255-b267-6f5271710dd4
+		summarizeBy: none
+		sourceColumn: PlantaId
+
+		annotation SummarizationSetBy = Automatic
+
+	column Nombre
+		dataType: string
+		lineageTag: bd1dbe3d-2b81-4bbd-b938-9380b55e29d9
+		summarizeBy: none
+		sourceColumn: Nombre
+
+		annotation SummarizationSetBy = Automatic
+
+	column Activo
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 8ef66d6d-85fb-44d2-a4d2-97ce3663af92
+		summarizeBy: none
+		sourceColumn: Activo
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar Plantas' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_Plantas = Origen{[Schema="gestar",Item="Plantas"]}[Data]
+				in
+				    gestar_Plantas
+
+	annotation PBI_ResultType = Table
+

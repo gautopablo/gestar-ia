@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "gestar-ia v0"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "6aef025e-29a1-4998-97d1-28d0213011e4"
+  }
+}

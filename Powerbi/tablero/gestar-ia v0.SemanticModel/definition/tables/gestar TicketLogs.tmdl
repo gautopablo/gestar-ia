@@ -1,0 +1,88 @@
+table 'gestar TicketLogs'
+	lineageTag: 3ecbaf13-eda2-43ea-b0c7-e8ef144e71d0
+
+	column LogId
+		dataType: int64
+		formatString: 0
+		lineageTag: cf3e1ba3-a8b4-4a10-9dbf-f376a4d47d47
+		summarizeBy: count
+		sourceColumn: LogId
+
+		annotation SummarizationSetBy = Automatic
+
+	column TicketId
+		dataType: int64
+		formatString: 0
+		lineageTag: 943770ee-c1c4-49e1-8644-3142a57f5f7d
+		summarizeBy: none
+		sourceColumn: TicketId
+
+		annotation SummarizationSetBy = Automatic
+
+	column UserId
+		dataType: int64
+		formatString: 0
+		lineageTag: fa09b73f-f140-44dc-bbe6-f3cd2526212b
+		summarizeBy: count
+		sourceColumn: UserId
+
+		annotation SummarizationSetBy = Automatic
+
+	column IsAi
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 82455feb-9193-4e87-8588-924ed5943577
+		summarizeBy: none
+		sourceColumn: IsAi
+
+		annotation SummarizationSetBy = Automatic
+
+	column FieldName
+		dataType: string
+		lineageTag: 57fa94da-582b-4a2a-b5bc-11c3ad7870f0
+		summarizeBy: none
+		sourceColumn: FieldName
+
+		annotation SummarizationSetBy = Automatic
+
+	column OldValue
+		dataType: string
+		lineageTag: d84d0048-3c43-43d5-a1d7-e3bc72ffa4d7
+		summarizeBy: none
+		sourceColumn: OldValue
+
+		annotation SummarizationSetBy = Automatic
+
+	column NewValue
+		dataType: string
+		lineageTag: f10f6442-f2d5-4ead-bce5-f2705964c4dd
+		summarizeBy: none
+		sourceColumn: NewValue
+
+		annotation SummarizationSetBy = Automatic
+
+	column ChangedAt
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 1c849a77-0150-491b-86cf-abf77729ad4a
+		summarizeBy: none
+		sourceColumn: ChangedAt
+
+		variation Variación
+			isDefault
+			relationship: fda2132e-7f80-4c97-89bd-6110443ea37e
+			defaultHierarchy: LocalDateTable_44b5cc22-679d-434e-97ac-9d285888f54d.'Jerarquía de fechas'
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'gestar TicketLogs' = m
+		mode: import
+		source =
+				let
+				    Origen = Sql.Database("server-sql-gestar.database.windows.net", "sql-db-gestar"),
+				    gestar_TicketLogs = Origen{[Schema="gestar",Item="TicketLogs"]}[Data]
+				in
+				    gestar_TicketLogs
+
+	annotation PBI_ResultType = Table
+

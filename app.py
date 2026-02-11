@@ -1390,10 +1390,14 @@ st.markdown(
     """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Raleway:wght@600;700&display=swap');
+    :root { color-scheme: light; }
     .stApp { background-color: #ffffff; }
     html, body, [class*="css"] {
         font-family: "Lato", sans-serif;
         color: #444;
+    }
+    .stApp, .stMarkdown, .stText, p, span, label, li {
+        color: #1f2933 !important;
     }
     h1, h2, h3, .raleway {
         font-family: "Raleway", sans-serif;
@@ -1467,6 +1471,7 @@ st.markdown(
     .taranto-title {
         margin: 0;
         color: #d52e25;
+        -webkit-text-fill-color: #d52e25;
         text-align: center;
         font-family: "Raleway", sans-serif;
         font-size: 2rem;
@@ -1476,6 +1481,7 @@ st.markdown(
     .taranto-subtitle {
         font-size: 1.05rem;
         color: #444;
+        -webkit-text-fill-color: #444;
         font-weight: 400;
     }
     .v2-card {
@@ -1555,6 +1561,12 @@ st.markdown(
     .stTextInput input,
     .stTextArea textarea {
         color: #1f2933 !important;
+        -webkit-text-fill-color: #1f2933 !important;
+    }
+    div[data-testid="stChatInput"] input,
+    div[data-testid="stChatInput"] textarea {
+        color: #1f2933 !important;
+        -webkit-text-fill-color: #1f2933 !important;
     }
     div[data-baseweb="input"] > div:focus-within,
     div[data-baseweb="select"] > div:focus-within,
@@ -1563,9 +1575,17 @@ st.markdown(
         box-shadow: 0 0 0 2px rgba(21, 96, 153, 0.18) !important;
     }
     .stTextInput input::placeholder,
-    .stTextArea textarea::placeholder {
+    .stTextArea textarea::placeholder,
+    div[data-testid="stChatInput"] input::placeholder,
+    div[data-testid="stChatInput"] textarea::placeholder {
         color: #6b7785 !important;
         opacity: 1 !important;
+    }
+    input:-webkit-autofill,
+    textarea:-webkit-autofill,
+    select:-webkit-autofill {
+        -webkit-text-fill-color: #1f2933 !important;
+        transition: background-color 9999s ease-out 0s;
     }
     [data-testid="stBottomBlockContainer"] {
         background: #dcf8c6 !important;
