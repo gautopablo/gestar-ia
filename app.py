@@ -630,7 +630,7 @@ def insert_ticket_record(draft, ids, metadata):
         conn.close()
 
 
-def fetch_tickets_for_form(filters, limit=20):
+def fetch_tickets_for_form(filters, limit=None):
     conn = get_azure_master_connection()
     try:
         where = []
@@ -645,15 +645,19 @@ def fetch_tickets_for_form(filters, limit=20):
         if filters.get("area_id"):
             where.append("t.AreaId = ?")
             params.append(filters["area_id"])
+        if filters.get("suggested_assignee_id"):
+            where.append("t.SuggestedAssigneeId = ?")
+            params.append(filters["suggested_assignee_id"])
         if filters.get("query"):
             where.append("(t.Title LIKE ? OR t.Description LIKE ?)")
             pattern = f"%{filters['query']}%"
             params.extend([pattern, pattern])
 
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        top_clause = f"TOP {int(limit)}" if limit else ""
         sql = f"""
             SELECT
-                TOP {int(limit)}
+                {top_clause}
                 t.TicketId,
                 t.Title,
                 t.Description,
@@ -1016,7 +1020,8 @@ class TicketAssistant:
             f"<b>Prioridad:</b> {prioridad_display}\n"
             f"<b>Usuario sugerido:</b> {usuario_display}\n"
             f"<b>Fecha de necesidad:</b> {fecha_display}\n"
-            f"<b>Fecha de necesidad normalizada:</b> {fecha_norm_display}"
+            f"<b>Fecha de necesidad normalizada:</b> {fecha_norm_display}\n"
+            f"<br><span style='color:#156099;'><b>💡 Confirmación rápida:</b> para crear el ticket, respondé <b>SI</b>.</span>"
         )
 
         return resumen, False
@@ -1334,6 +1339,69 @@ if "ui_section" not in st.session_state:
 taranto_logo_b64 = get_base64_image("assets/taranto-logo.png")
 
 
+def create_ticket_from_current_chat_draft(confirm_source):
+    d = st.session_state.ticket_draft
+    ids, map_warnings = map_entities_to_ids(
+        d, st.session_state.master_indexes, st.session_state.master_data
+    )
+    need_by_dt = safe_parse_datetime(d.get("fecha_necesidad"))
+    d["fecha_necesidad_resuelta"] = (
+        need_by_dt.strftime("%Y-%m-%d %H:%M:%S") if need_by_dt else None
+    )
+    score = compute_completeness_score(d, ids)
+    session_user = get_session_user(st.session_state.master_data)
+    t_id = insert_ticket_record(
+        d,
+        ids,
+        {
+            "requester_id": session_user["id"] if session_user else None,
+            "assignee_id": None,
+            "confidence_score": st.session_state.last_ai_res.get("confidence", 0.8),
+            "original_prompt": st.session_state.last_prompt or confirm_source,
+            "ai_processing_time": st.session_state.last_ai_res.get(
+                "ai_processing_time", 0
+            ),
+            "conversation_id": st.session_state.last_ai_res.get("conversation_id"),
+        },
+    )
+
+    warnings = []
+    if not ids.get("area_id") and not ids.get("suggested_assignee_id"):
+        warnings.append(
+            "Falta Area o Usuario sugerido. El ticket puede requerir mas revision del responsable del area."
+        )
+    warnings.extend(map_warnings)
+    if d.get("fecha_necesidad") and not d.get("fecha_necesidad_resuelta"):
+        warnings.append(
+            "No pude normalizar la Fecha de Necesidad. Se guardo sin fecha normalizada."
+        )
+
+    warning_text = "<b>Observaciones:</b> Sin observaciones."
+    if warnings:
+        warning_lines = "<br>".join([f"- {w}" for w in warnings])
+        warning_text = f"<b>Observaciones:</b><br>{warning_lines}"
+
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": (
+                f"✅ ¡Ticket #{t_id} creado con éxito!"
+                f"<br><b>Completitud:</b> {score.upper()}"
+                f"<br>{warning_text}"
+            ),
+        }
+    )
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": "Listo. Ya podés cargar un nuevo ticket o tarea cuando quieras.",
+        }
+    )
+    for k in st.session_state.ticket_draft:
+        st.session_state.ticket_draft[k] = None
+    st.session_state.show_confirm_buttons = False
+
+
 def render_chat_mode(api_key, model_name, debug_expander):
     for msg in st.session_state.messages:
         role_class = "user-bubble" if msg["role"] == "user" else "bot-bubble"
@@ -1346,71 +1414,7 @@ def render_chat_mode(api_key, model_name, debug_expander):
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Crear Ticket", key="btn_crear"):
-                d = st.session_state.ticket_draft
-                ids, map_warnings = map_entities_to_ids(
-                    d, st.session_state.master_indexes, st.session_state.master_data
-                )
-                need_by_dt = safe_parse_datetime(d.get("fecha_necesidad"))
-                d["fecha_necesidad_resuelta"] = (
-                    need_by_dt.strftime("%Y-%m-%d %H:%M:%S") if need_by_dt else None
-                )
-                score = compute_completeness_score(d, ids)
-                session_user = get_session_user(st.session_state.master_data)
-                t_id = insert_ticket_record(
-                    d,
-                    ids,
-                    {
-                        "requester_id": session_user["id"] if session_user else None,
-                        "assignee_id": None,
-                        "confidence_score": st.session_state.last_ai_res.get(
-                            "confidence", 0.8
-                        ),
-                        "original_prompt": st.session_state.last_prompt
-                        or "Confirmado por boton",
-                        "ai_processing_time": st.session_state.last_ai_res.get(
-                            "ai_processing_time", 0
-                        ),
-                        "conversation_id": st.session_state.last_ai_res.get(
-                            "conversation_id"
-                        ),
-                    },
-                )
-
-                warnings = []
-                if not ids.get("area_id") and not ids.get("suggested_assignee_id"):
-                    warnings.append(
-                        "Falta Area o Usuario sugerido. El ticket puede requerir mas revision del responsable del area."
-                    )
-                warnings.extend(map_warnings)
-                if d.get("fecha_necesidad") and not d.get("fecha_necesidad_resuelta"):
-                    warnings.append(
-                        "No pude normalizar la Fecha de Necesidad. Se guardo sin fecha normalizada."
-                    )
-
-                warning_text = "<b>Observaciones:</b> Sin observaciones."
-                if warnings:
-                    warning_lines = "<br>".join([f"- {w}" for w in warnings])
-                    warning_text = f"<b>Observaciones:</b><br>{warning_lines}"
-
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": (
-                            f"✅ ¡Ticket #{t_id} creado con éxito!"
-                            f"<br><b>Completitud:</b> {score.upper()}"
-                            f"<br>{warning_text}"
-                        ),
-                    }
-                )
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "Listo. Ya podés cargar un nuevo ticket o tarea cuando quieras.",
-                    }
-                )
-                for k in st.session_state.ticket_draft:
-                    st.session_state.ticket_draft[k] = None
-                st.session_state.show_confirm_buttons = False
+                create_ticket_from_current_chat_draft("Confirmado por boton")
                 st.rerun()
         with col2:
             if st.button("✏️ Agregar información", key="btn_mas_info"):
@@ -1432,6 +1436,10 @@ def render_chat_mode(api_key, model_name, debug_expander):
 
 def handle_chat_input_and_processing(api_key, model_name):
     if prompt := st.chat_input("Escribe tu solicitud/tarea aquí..."):
+        if st.session_state.show_confirm_buttons and normalize_text(prompt) == "si":
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            create_ticket_from_current_chat_draft("Confirmado por SI")
+            st.rerun()
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.session_state.show_confirm_buttons = False
         st.rerun()
@@ -1505,7 +1513,6 @@ def handle_chat_input_and_processing(api_key, model_name):
 
 def render_form_mode():
     st.markdown("<div class='dbg-panel-inner'></div>", unsafe_allow_html=True)
-    st.subheader("Modo Formulario")
     ticket_tab, tray_tab = st.tabs(["Nuevo Ticket", "Bandeja y Edicion"])
 
     users = st.session_state.master_data.get("usuarios", [])
@@ -1586,35 +1593,8 @@ def render_form_mode():
                     st.warning(" | ".join(warns))
 
     with tray_tab:
-        if "form_mode_view" not in st.session_state:
-            st.session_state.form_mode_view = "LISTA"
-
-        n1, n2, _ = st.columns([1, 1, 4], gap="small")
-        with n1:
-            cls = "active-nav" if st.session_state.form_mode_view == "LISTA" else ""
-            st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-            if st.button(
-                "LISTA",
-                key="form_nav_lista",
-                use_container_width=True,
-            ):
-                st.session_state.form_mode_view = "LISTA"
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-        with n2:
-            cls = "active-nav" if st.session_state.form_mode_view == "EDICION" else ""
-            st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-            if st.button(
-                "EDICION",
-                key="form_nav_edicion",
-                use_container_width=True,
-            ):
-                st.session_state.form_mode_view = "EDICION"
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        if st.session_state.form_mode_view == "LISTA":
-            c1, c2, c3, c4 = st.columns(4)
+        if st.session_state.form_selected_ticket_id is None:
+            c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
                 estado_opt = ["Todos"] + [e["nombre"] for e in estados]
                 estado_sel = st.selectbox("Estado", estado_opt, key="form_filter_estado")
@@ -1625,6 +1605,11 @@ def render_form_mode():
                 area_opt = ["Todas"] + [a["nombre"] for a in areas]
                 area_filter = st.selectbox("Area", area_opt, key="form_filter_area")
             with c4:
+                sugg_opt = ["Todos"] + [u["username"] for u in users]
+                sugg_filter = st.selectbox(
+                    "Usuario sugerido", sugg_opt, key="form_filter_sugg_user"
+                )
+            with c5:
                 q = st.text_input("Buscar", key="form_filter_query")
 
             estado_id = next(
@@ -1636,41 +1621,42 @@ def render_form_mode():
             area_id = next(
                 (a["id"] for a in areas if a["nombre"] == area_filter), None
             ) if area_filter != "Todas" else None
+            suggested_assignee_id = next(
+                (u["id"] for u in users if u["username"] == sugg_filter), None
+            ) if sugg_filter != "Todos" else None
 
             df = fetch_tickets_for_form(
                 {
                     "estado_id": estado_id,
                     "prioridad_id": prioridad_id,
                     "area_id": area_id,
+                    "suggested_assignee_id": suggested_assignee_id,
                     "query": q.strip() if q else None,
                 },
-                limit=20,
+                limit=None,
             )
             if df.empty:
                 st.info("No hay tickets para los filtros seleccionados.")
                 return
 
-            st.caption("Mostrando hasta 20 tickets.")
-            st.dataframe(df, width="stretch", height=300)
+            st.caption(f"Mostrando {len(df)} tickets.")
+            st.dataframe(df, width="stretch", height=600, hide_index=True)
             ticket_ids = df["TicketId"].tolist()
             default_idx = 0
-            if st.session_state.form_selected_ticket_id in ticket_ids:
-                default_idx = ticket_ids.index(st.session_state.form_selected_ticket_id)
             selected_ticket_id = st.selectbox(
                 "Seleccionar Ticket",
                 ticket_ids,
                 index=default_idx,
                 key="form_selected_ticket",
             )
-            if st.button("Abrir en edición", key="form_open_edit", type="primary"):
+            if st.button("Editar", key="form_open_edit", type="primary"):
                 st.session_state.form_selected_ticket_id = selected_ticket_id
-                st.session_state.form_mode_view = "EDICION"
                 st.rerun()
             return
 
         selected_ticket_id = st.session_state.form_selected_ticket_id
         if not selected_ticket_id:
-            st.warning("No hay ticket seleccionado. Volvé a LISTA y elegí uno.")
+            st.warning("No hay ticket seleccionado.")
             return
 
         t = fetch_ticket_for_edit(selected_ticket_id)
@@ -1798,9 +1784,17 @@ def render_form_mode():
                 format="DD/MM/YYYY",
                 disabled=not use_need_by,
             )
-            save_edit = st.form_submit_button("Guardar Cambios")
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                accept_edit = st.form_submit_button("Aceptar", type="primary")
+            with c_btn2:
+                cancel_edit = st.form_submit_button("Cancelar")
 
-        if save_edit:
+        if cancel_edit:
+            st.session_state.form_selected_ticket_id = None
+            st.rerun()
+
+        if accept_edit:
             parsed = (
                 datetime(
                     need_by_date.year,
@@ -1831,6 +1825,7 @@ def render_form_mode():
                 updates,
                 actor_user_id=session_user["id"] if session_user else None,
             )
+            st.session_state.form_selected_ticket_id = None
             st.rerun()
 
         st.markdown("#### Seguimiento / Comentarios")
@@ -1872,7 +1867,7 @@ current_label = session_user["username"] if session_user else None
 with st.container():
     st.markdown("<div class='dbg-panel-header'></div>", unsafe_allow_html=True)
     st.markdown("<div class='taranto-header-marker'></div>", unsafe_allow_html=True)
-    head1, head2, head3 = st.columns([1.4, 3.2, 1.8], vertical_alignment="center")
+    head1, head2, head3 = st.columns([1.4, 3.2, 2.2], vertical_alignment="center")
     with head1:
         if taranto_logo_b64:
             st.markdown(
@@ -1887,41 +1882,40 @@ with st.container():
             unsafe_allow_html=True,
         )
     with head3:
-        if session_labels:
-            idx = session_labels.index(current_label) if current_label in session_labels else 0
-            selected_session_label = st.selectbox(
-                "Usuario de sesión",
-                session_labels,
-                index=idx,
-                key="header_session_user",
-            )
-            if selected_session_label != current_label:
-                new_user = next(
-                    (u for u in session_users if u["username"] == selected_session_label),
-                    None,
+        ux1, ux2, ux3 = st.columns(
+            [3.2, 1.6, 2.2], gap="small", vertical_alignment="center"
+        )
+        with ux1:
+            if session_labels:
+                idx = session_labels.index(current_label) if current_label in session_labels else 0
+                selected_session_label = st.selectbox(
+                    "Usuario de sesión",
+                    session_labels,
+                    index=idx,
+                    key="header_session_user",
                 )
-                if new_user:
-                    st.session_state.current_user_id = new_user["id"]
-                    st.rerun()
-
-with st.container():
-    st.markdown("<div class='dbg-panel-nav'></div>", unsafe_allow_html=True)
-    nav1, nav2, _ = st.columns([1, 1, 4], gap="small")
-    with nav1:
-        cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
-        st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-        if st.button("CHAT IA", key="main_nav_chat", use_container_width=True):
-            st.session_state.ui_section = "CHAT IA"
-            st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-    with nav2:
-        cls = "active-nav" if st.session_state.ui_section == "MODO FORMULARIO" else ""
-        st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-        if st.button("MODO FORMULARIO", key="main_nav_form", use_container_width=True):
-            st.session_state.ui_section = "MODO FORMULARIO"
-            st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("<hr style='border: 1px solid #d52e25; margin-top:0.2rem; margin-bottom:0.9rem;'>", unsafe_allow_html=True)
+                if selected_session_label != current_label:
+                    new_user = next(
+                        (u for u in session_users if u["username"] == selected_session_label),
+                        None,
+                    )
+                    if new_user:
+                        st.session_state.current_user_id = new_user["id"]
+                        st.rerun()
+        with ux2:
+            cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
+            st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+            if st.button("CHAT IA", key="main_nav_chat", use_container_width=True):
+                st.session_state.ui_section = "CHAT IA"
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+        with ux3:
+            cls = "active-nav" if st.session_state.ui_section == "MODO FORMULARIO" else ""
+            st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+            if st.button("MODO FORMULARIO", key="main_nav_form", use_container_width=True):
+                st.session_state.ui_section = "MODO FORMULARIO"
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
 with st.container():
     st.markdown("<div class='dbg-panel-content'></div>", unsafe_allow_html=True)
