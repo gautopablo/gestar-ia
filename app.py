@@ -912,6 +912,359 @@ def add_ticket_comment(ticket_id, comment, user_id=None):
         conn.close()
 
 
+def _log_ticket_change(cursor, backend_table, ticket_id, user_id, field_name, old_value, new_value):
+    cursor.execute(
+        f"""
+        INSERT INTO {backend_table} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+        VALUES (?, ?, 0, ?, ?, ?)
+        """,
+        (
+            ticket_id,
+            user_id,
+            field_name,
+            None if old_value is None else str(old_value),
+            None if new_value is None else str(new_value),
+        ),
+    )
+
+
+def _subtask_lookup_display_value(cursor, field_name, raw_value):
+    if raw_value is None:
+        return None
+    if field_name in ("NeedByAt", "CompletedAt") and isinstance(raw_value, datetime):
+        return raw_value.replace(microsecond=0).isoformat(sep=" ")
+    if field_name == "AssigneeId":
+        cursor.execute(
+            f"SELECT TOP 1 Username FROM {qname('Users')} WHERE UserId = ?",
+            (raw_value,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else str(raw_value)
+    if field_name == "EstadoId":
+        cursor.execute(
+            f"SELECT TOP 1 Nombre FROM {qname('Estados')} WHERE EstadoId = ?",
+            (raw_value,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else str(raw_value)
+    return str(raw_value)
+
+
+def _subtask_compact_repr(cursor, row_dict):
+    assignee = _subtask_lookup_display_value(cursor, "AssigneeId", row_dict.get("AssigneeId"))
+    estado = _subtask_lookup_display_value(cursor, "EstadoId", row_dict.get("EstadoId"))
+    return (
+        f"SubtaskId={row_dict.get('SubtaskId')} | "
+        f"Title={row_dict.get('Title')} | "
+        f"Assignee={assignee} | "
+        f"Estado={estado} | "
+        f"NeedByAt={_subtask_lookup_display_value(cursor, 'NeedByAt', row_dict.get('NeedByAt'))} | "
+        f"CompletedAt={_subtask_lookup_display_value(cursor, 'CompletedAt', row_dict.get('CompletedAt'))}"
+    )
+
+
+def get_subtasks_backend():
+    schema = get_master_schema()
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TABLE_SCHEMA, TABLE_NAME
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'Subtasks'
+            """,
+            (schema,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise RuntimeError(
+                f"No existe {schema}.Subtasks. Ejecuta primero la Fase 0."
+            )
+        table_schema, table_name = row[0], row[1]
+        return {"table": f"{table_schema}.{table_name}"}
+    finally:
+        conn.close()
+
+
+def fetch_subtasks(ticket_id):
+    backend = get_subtasks_backend()
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT
+                s.SubtaskId,
+                s.TicketId,
+                s.Title,
+                s.Description,
+                s.AssigneeId,
+                u.Username AS Assignee,
+                s.EstadoId,
+                e.Nombre AS Estado,
+                s.NeedByAt,
+                s.CompletedAt,
+                s.SortOrder,
+                s.CreatedAt,
+                s.CreatedBy,
+                uc.Username AS CreatedByUsername,
+                s.UpdatedAt,
+                s.UpdatedBy,
+                uu.Username AS UpdatedByUsername
+            FROM {backend['table']} s
+            LEFT JOIN {qname('Users')} u ON s.AssigneeId = u.UserId
+            LEFT JOIN {qname('Estados')} e ON s.EstadoId = e.EstadoId
+            LEFT JOIN {qname('Users')} uc ON s.CreatedBy = uc.UserId
+            LEFT JOIN {qname('Users')} uu ON s.UpdatedBy = uu.UserId
+            WHERE s.TicketId = ?
+            ORDER BY s.SortOrder ASC, s.SubtaskId ASC
+            """,
+            (ticket_id,),
+        )
+        rows = cursor.fetchall()
+        cols = [c[0] for c in cursor.description]
+        return pd.DataFrame.from_records(rows, columns=cols)
+    finally:
+        conn.close()
+
+
+def create_subtask(ticket_id, payload, actor_user_id):
+    backend = get_subtasks_backend()
+    logs_backend = get_ticket_log_backend()
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT TOP 1 TicketId FROM {qname('Tickets')} WHERE TicketId = ?",
+            (ticket_id,),
+        )
+        if not cursor.fetchone():
+            raise RuntimeError(f"No existe TicketId={ticket_id}")
+
+        title = (payload.get("title") or "").strip()
+        if not title:
+            raise ValueError("El titulo de la subtarea es obligatorio.")
+
+        cursor.execute(
+            f"""
+            INSERT INTO {backend['table']} (
+                TicketId, Title, Description, AssigneeId, EstadoId,
+                NeedByAt, CompletedAt, SortOrder, CreatedBy, UpdatedBy
+            )
+            OUTPUT INSERTED.SubtaskId
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticket_id,
+                title,
+                payload.get("description"),
+                payload.get("assignee_id"),
+                payload.get("estado_id"),
+                payload.get("need_by_at"),
+                payload.get("completed_at"),
+                int(payload.get("sort_order", 0)),
+                actor_user_id,
+                actor_user_id,
+            ),
+        )
+        row = cursor.fetchone()
+        new_subtask_id = row[0] if row else None
+
+        if new_subtask_id is not None:
+            cursor.execute(
+                f"""
+                SELECT TOP 1
+                    SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                    NeedByAt, CompletedAt, SortOrder
+                FROM {backend['table']}
+                WHERE SubtaskId = ?
+                """,
+                (new_subtask_id,),
+            )
+            created_row = cursor.fetchone()
+            if created_row:
+                created_cols = [
+                    "SubtaskId",
+                    "TicketId",
+                    "Title",
+                    "Description",
+                    "AssigneeId",
+                    "EstadoId",
+                    "NeedByAt",
+                    "CompletedAt",
+                    "SortOrder",
+                ]
+                created_dict = dict(zip(created_cols, created_row))
+                _log_ticket_change(
+                    cursor,
+                    logs_backend["table"],
+                    ticket_id,
+                    actor_user_id,
+                    "subtask_created",
+                    None,
+                    _subtask_compact_repr(cursor, created_dict),
+                )
+
+        conn.commit()
+        return new_subtask_id
+    finally:
+        conn.close()
+
+
+def update_subtask(subtask_id, updates, actor_user_id):
+    if not updates:
+        return False
+
+    allowed_fields = {
+        "Title",
+        "Description",
+        "AssigneeId",
+        "EstadoId",
+        "NeedByAt",
+        "CompletedAt",
+        "SortOrder",
+    }
+    clean_updates = {k: v for k, v in updates.items() if k in allowed_fields}
+    if not clean_updates:
+        return False
+
+    backend = get_subtasks_backend()
+    logs_backend = get_ticket_log_backend()
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT TOP 1
+                SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                NeedByAt, CompletedAt, SortOrder
+            FROM {backend['table']}
+            WHERE SubtaskId = ?
+            """,
+            (subtask_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise RuntimeError(f"No existe SubtaskId={subtask_id}")
+        cols = [
+            "SubtaskId",
+            "TicketId",
+            "Title",
+            "Description",
+            "AssigneeId",
+            "EstadoId",
+            "NeedByAt",
+            "CompletedAt",
+            "SortOrder",
+        ]
+        current = dict(zip(cols, row))
+
+        def _normalize_cmp(v):
+            if isinstance(v, datetime):
+                return v.replace(microsecond=0).isoformat(sep=" ")
+            if v is None:
+                return None
+            return str(v)
+
+        changed_items = []
+        for field_name, new_value in clean_updates.items():
+            old_value = current.get(field_name)
+            if _normalize_cmp(old_value) != _normalize_cmp(new_value):
+                changed_items.append((field_name, old_value, new_value))
+
+        if not changed_items:
+            return False
+
+        set_parts = []
+        params = []
+        for field_name, _old, value in changed_items:
+            set_parts.append(f"{field_name} = ?")
+            params.append(value)
+
+        set_parts.append("UpdatedAt = SYSDATETIME()")
+        set_parts.append("UpdatedBy = ?")
+        params.append(actor_user_id)
+        params.append(subtask_id)
+
+        cursor.execute(
+            f"""
+            UPDATE {backend['table']}
+            SET {', '.join(set_parts)}
+            WHERE SubtaskId = ?
+            """,
+            params,
+        )
+
+        for field_name, old_value, new_value in changed_items:
+            _log_ticket_change(
+                cursor,
+                logs_backend["table"],
+                current["TicketId"],
+                actor_user_id,
+                f"subtask.{field_name}",
+                _subtask_lookup_display_value(cursor, field_name, old_value),
+                _subtask_lookup_display_value(cursor, field_name, new_value),
+            )
+
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_subtask(subtask_id, actor_user_id=None):
+    backend = get_subtasks_backend()
+    logs_backend = get_ticket_log_backend()
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT TOP 1
+                SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                NeedByAt, CompletedAt, SortOrder
+            FROM {backend['table']}
+            WHERE SubtaskId = ?
+            """,
+            (subtask_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+        cols = [
+            "SubtaskId",
+            "TicketId",
+            "Title",
+            "Description",
+            "AssigneeId",
+            "EstadoId",
+            "NeedByAt",
+            "CompletedAt",
+            "SortOrder",
+        ]
+        current = dict(zip(cols, row))
+
+        cursor.execute(
+            f"DELETE FROM {backend['table']} WHERE SubtaskId = ?",
+            (subtask_id,),
+        )
+        if cursor.rowcount > 0:
+            _log_ticket_change(
+                cursor,
+                logs_backend["table"],
+                current["TicketId"],
+                actor_user_id,
+                "subtask_deleted",
+                _subtask_compact_repr(cursor, current),
+                None,
+            )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 # ==========================================
 # 2. LÓGICA HÍBRIDA (AI + RULES)
 # ==========================================
@@ -1524,7 +1877,7 @@ def render_form_mode():
     estados = st.session_state.master_data.get("estados", [])
 
     with ticket_tab:
-        with st.form("form_create_ticket"):
+        with st.form("form_create_ticket", clear_on_submit=True):
             titulo = st.text_input("Titulo *")
             descripcion = st.text_area("Descripcion *")
             c1, c2, c3 = st.columns(3)
@@ -1544,10 +1897,19 @@ def render_form_mode():
                 user_opt = [""] + [u["username"] for u in users]
                 user_sel = st.selectbox("Usuario sugerido", user_opt)
 
-            fecha_sel = st.date_input("Fecha de necesidad", format="DD/MM/YYYY")
-            submitted = st.form_submit_button("Crear Ticket")
+            fecha_sel = st.date_input(
+                "Fecha de necesidad", value=None, format="DD/MM/YYYY"
+            )
+            b1, b2, _ = st.columns([1, 1, 6], gap="small")
+            with b1:
+                create_clicked = st.form_submit_button("Crear Ticket", type="primary")
+            with b2:
+                cancel_clicked = st.form_submit_button("Cancelar")
 
-        if submitted:
+        if cancel_clicked:
+            st.rerun()
+
+        if create_clicked:
             if not titulo.strip() or not descripcion.strip():
                 st.error("Titulo y Descripcion son obligatorios.")
             else:
@@ -1838,6 +2200,207 @@ def render_form_mode():
             )
             st.session_state.form_selected_ticket_id = None
             st.rerun()
+
+        st.markdown("#### Subtareas")
+        try:
+            subtasks_df = fetch_subtasks(selected_ticket_id)
+            if subtasks_df.empty:
+                st.caption("Sin subtareas registradas.")
+            else:
+                st.dataframe(
+                    subtasks_df[
+                        [
+                            "SubtaskId",
+                            "Title",
+                            "Assignee",
+                            "Estado",
+                            "NeedByAt",
+                            "CompletedAt",
+                            "SortOrder",
+                        ]
+                    ],
+                    width="stretch",
+                    height=180,
+                    hide_index=True,
+                    selection_mode="single-row",
+                    on_select="rerun",
+                    key=f"subtasks_grid_{selected_ticket_id}",
+                )
+
+            sub_form_col1, sub_form_col2 = st.columns(2, gap="large")
+            session_user = get_session_user(st.session_state.master_data)
+            users_by_id_sub = {u["id"]: u["username"] for u in users}
+            states_by_id_sub = {e["id"]: e["nombre"] for e in estados}
+            user_labels_sub = [SIN_DEFINIR] + list(users_by_id_sub.values())
+            state_labels_sub = [SIN_DEFINIR] + list(states_by_id_sub.values())
+
+            def _label_to_id_sub(by_id, label):
+                if label == SIN_DEFINIR:
+                    return None
+                return next((k for k, v in by_id.items() if v == label), None)
+
+            def _date_to_eod(dt_date):
+                if not dt_date:
+                    return None
+                return datetime(dt_date.year, dt_date.month, dt_date.day, 17, 0, 0)
+
+            with sub_form_col1:
+                st.markdown("**Nueva subtarea**")
+                with st.form(f"form_subtask_create_{selected_ticket_id}", clear_on_submit=True):
+                    sub_title = st.text_input("Titulo subtarea *", key=f"sub_new_title_{selected_ticket_id}")
+                    sub_desc = st.text_area("Descripcion", key=f"sub_new_desc_{selected_ticket_id}")
+                    sub_assignee_label = st.selectbox(
+                        "Responsable",
+                        user_labels_sub,
+                        key=f"sub_new_assignee_{selected_ticket_id}",
+                    )
+                    sub_state_label = st.selectbox(
+                        "Estado",
+                        state_labels_sub,
+                        key=f"sub_new_estado_{selected_ticket_id}",
+                    )
+                    sub_need_by_date = st.date_input(
+                        "Fecha necesidad",
+                        value=None,
+                        format="DD/MM/YYYY",
+                        key=f"sub_new_need_by_{selected_ticket_id}",
+                    )
+                    sub_completed_date = st.date_input(
+                        "Fecha completado",
+                        value=None,
+                        format="DD/MM/YYYY",
+                        key=f"sub_new_completed_{selected_ticket_id}",
+                    )
+                    sub_sort_order = st.number_input(
+                        "Orden",
+                        min_value=0,
+                        max_value=9999,
+                        value=0,
+                        step=1,
+                        key=f"sub_new_sort_{selected_ticket_id}",
+                    )
+                    create_sub = st.form_submit_button("Agregar subtarea", type="primary")
+
+                if create_sub:
+                    create_subtask(
+                        selected_ticket_id,
+                        {
+                            "title": sub_title,
+                            "description": sub_desc or None,
+                            "assignee_id": _label_to_id_sub(users_by_id_sub, sub_assignee_label),
+                            "estado_id": _label_to_id_sub(states_by_id_sub, sub_state_label),
+                            "need_by_at": _date_to_eod(sub_need_by_date),
+                            "completed_at": _date_to_eod(sub_completed_date),
+                            "sort_order": int(sub_sort_order),
+                        },
+                        actor_user_id=session_user["id"] if session_user else None,
+                    )
+                    st.success("Subtarea creada.")
+                    st.rerun()
+
+            with sub_form_col2:
+                st.markdown("**Editar subtarea seleccionada**")
+                sub_selection = st.session_state.get(
+                    f"subtasks_grid_{selected_ticket_id}", {}
+                ).get("selection", {})
+                sub_selected_rows = sub_selection.get("rows", [])
+                if not sub_selected_rows or subtasks_df.empty:
+                    st.caption("Seleccioná una subtarea de la grilla para editar.")
+                else:
+                    selected_sub_idx = sub_selected_rows[0]
+                    selected_sub = subtasks_df.iloc[selected_sub_idx].to_dict()
+
+                    def _safe_date(v):
+                        if v is None:
+                            return None
+                        try:
+                            if pd.isna(v):
+                                return None
+                        except Exception:
+                            pass
+                        if isinstance(v, datetime):
+                            return v.date()
+                        parsed_v = pd.to_datetime(v, errors="coerce")
+                        if pd.isna(parsed_v):
+                            return None
+                        return parsed_v.date()
+
+                    current_assignee = selected_sub.get("Assignee")
+                    current_estado = selected_sub.get("Estado")
+                    assignee_idx = (
+                        user_labels_sub.index(current_assignee)
+                        if current_assignee in user_labels_sub
+                        else 0
+                    )
+                    estado_idx = (
+                        state_labels_sub.index(current_estado)
+                        if current_estado in state_labels_sub
+                        else 0
+                    )
+
+                    with st.form(f"form_subtask_edit_{selected_ticket_id}"):
+                        sub_edit_title = st.text_input(
+                            "Titulo subtarea *",
+                            value=selected_sub.get("Title") or "",
+                            key=f"sub_edit_title_{selected_ticket_id}",
+                        )
+                        sub_edit_desc = st.text_area(
+                            "Descripcion",
+                            value=selected_sub.get("Description") or "",
+                            key=f"sub_edit_desc_{selected_ticket_id}",
+                        )
+                        sub_edit_assignee = st.selectbox(
+                            "Responsable",
+                            user_labels_sub,
+                            index=assignee_idx,
+                            key=f"sub_edit_assignee_{selected_ticket_id}",
+                        )
+                        sub_edit_estado = st.selectbox(
+                            "Estado",
+                            state_labels_sub,
+                            index=estado_idx,
+                            key=f"sub_edit_estado_{selected_ticket_id}",
+                        )
+                        sub_edit_need_by = st.date_input(
+                            "Fecha necesidad",
+                            value=_safe_date(selected_sub.get("NeedByAt")),
+                            format="DD/MM/YYYY",
+                            key=f"sub_edit_need_by_{selected_ticket_id}",
+                        )
+                        sub_edit_completed = st.date_input(
+                            "Fecha completado",
+                            value=_safe_date(selected_sub.get("CompletedAt")),
+                            format="DD/MM/YYYY",
+                            key=f"sub_edit_completed_{selected_ticket_id}",
+                        )
+                        sub_edit_sort = st.number_input(
+                            "Orden",
+                            min_value=0,
+                            max_value=9999,
+                            value=int(selected_sub.get("SortOrder") or 0),
+                            step=1,
+                            key=f"sub_edit_sort_{selected_ticket_id}",
+                        )
+                        update_sub = st.form_submit_button("Guardar subtarea", type="primary")
+
+                    if update_sub:
+                        update_subtask(
+                            int(selected_sub["SubtaskId"]),
+                            {
+                                "Title": sub_edit_title,
+                                "Description": sub_edit_desc or None,
+                                "AssigneeId": _label_to_id_sub(users_by_id_sub, sub_edit_assignee),
+                                "EstadoId": _label_to_id_sub(states_by_id_sub, sub_edit_estado),
+                                "NeedByAt": _date_to_eod(sub_edit_need_by),
+                                "CompletedAt": _date_to_eod(sub_edit_completed),
+                                "SortOrder": int(sub_edit_sort),
+                            },
+                            actor_user_id=session_user["id"] if session_user else None,
+                        )
+                        st.success("Subtarea actualizada.")
+                        st.rerun()
+        except Exception as sub_err:
+            st.error(f"Error de subtareas: {sub_err}")
 
         st.markdown("#### Seguimiento / Comentarios")
         try:
