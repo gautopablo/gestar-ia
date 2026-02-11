@@ -1640,18 +1640,29 @@ def render_form_mode():
                 return
 
             st.caption(f"Mostrando {len(df)} tickets.")
-            st.dataframe(df, width="stretch", height=600, hide_index=True)
-            ticket_ids = df["TicketId"].tolist()
-            default_idx = 0
-            selected_ticket_id = st.selectbox(
-                "Seleccionar Ticket",
-                ticket_ids,
-                index=default_idx,
-                key="form_selected_ticket",
+            st.dataframe(
+                df,
+                width="stretch",
+                height=360,
+                hide_index=True,
+                selection_mode="single-row",
+                on_select="rerun",
+                key="form_ticket_grid",
             )
+            selection = st.session_state.get("form_ticket_grid", {}).get("selection", {})
+            selected_rows = selection.get("rows", [])
+            selected_ticket_id = None
+            if selected_rows:
+                row_idx = selected_rows[0]
+                selected_ticket_id = int(df.iloc[row_idx]["TicketId"])
+                st.caption(f"Ticket seleccionado: #{selected_ticket_id}")
+
             if st.button("Editar", key="form_open_edit", type="primary"):
-                st.session_state.form_selected_ticket_id = selected_ticket_id
-                st.rerun()
+                if selected_ticket_id is None:
+                    st.warning("Seleccioná una fila de la grilla antes de editar.")
+                else:
+                    st.session_state.form_selected_ticket_id = selected_ticket_id
+                    st.rerun()
             return
 
         selected_ticket_id = st.session_state.form_selected_ticket_id
@@ -1784,10 +1795,10 @@ def render_form_mode():
                 format="DD/MM/YYYY",
                 disabled=not use_need_by,
             )
-            c_btn1, c_btn2 = st.columns(2)
-            with c_btn1:
+            button_col = st.columns([1, 1, 6], gap="small")
+            with button_col[0]:
                 accept_edit = st.form_submit_button("Aceptar", type="primary")
-            with c_btn2:
+            with button_col[1]:
                 cancel_edit = st.form_submit_button("Cancelar")
 
         if cancel_edit:
