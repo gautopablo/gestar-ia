@@ -1317,6 +1317,10 @@ class TicketAssistant:
         ### Extracción (solo si intencion es "crear_ticket"):
         - titulo: Breve resumen (string o null)
         - descripcion: Detalle (string o null)
+          - Usa Contexto Actual.descripcion como base.
+          - Si el mensaje agrega información útil (aunque sea texto libre), enriquecé la descripción.
+          - Si el mensaje no agrega contenido nuevo, conservá la descripción anterior.
+          - No uses como descripcion mensajes de control/confirmación (ej: "si", "crear", "ok", "dale", "confirmar", "editar", "cancelar").
         - planta: Nombre EXACTO de planta de la lista (string o null)
         - division: Nombre de división (string o null)
         - area: Nombre EXACTO del área de la lista (string o null)
@@ -1826,6 +1830,27 @@ CHAT_CONFIRM_TERMS = {
 }
 
 
+DESCRIPTION_CONTROL_TERMS = CHAT_CONFIRM_TERMS | {
+    normalize_text("editar"),
+    normalize_text("cancelar"),
+    normalize_text("cancelar carga"),
+}
+
+
+def should_update_description(current_desc, new_desc, user_input):
+    candidate = normalize_text(new_desc)
+    if not candidate:
+        return False
+    if candidate in DESCRIPTION_CONTROL_TERMS:
+        return False
+    if len(candidate.split()) <= 1 and len(candidate) <= 12:
+        return False
+    user_norm = normalize_text(user_input)
+    if user_norm in DESCRIPTION_CONTROL_TERMS and candidate == user_norm:
+        return False
+    return True
+
+
 def has_active_chat_draft():
     draft = st.session_state.ticket_draft
     keys = [
@@ -2026,7 +2051,15 @@ def handle_chat_input_and_processing(api_key, model_name):
                     for k in st.session_state.ticket_draft.keys():
                         v = ai_res.get(k)
                         if v is not None and v != "":
-                            st.session_state.ticket_draft[k] = v
+                            if k == "descripcion":
+                                if should_update_description(
+                                    st.session_state.ticket_draft.get("descripcion"),
+                                    v,
+                                    user_input,
+                                ):
+                                    st.session_state.ticket_draft[k] = v
+                            else:
+                                st.session_state.ticket_draft[k] = v
                     if suggested_user_by_rule:
                         st.session_state.ticket_draft["usuario_sugerido"] = (
                             suggested_user_by_rule
