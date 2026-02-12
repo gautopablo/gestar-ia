@@ -190,6 +190,24 @@ def has_relative_date_language(value):
     )
 
 
+def extract_suggested_user_from_text(value):
+    txt = normalize_text(value)
+    if not txt:
+        return None
+
+    patterns = [
+        r"\b(?:responsable|encargado|sugerido)\b(?:\s*[:=-]\s*|\s+)([a-z0-9._-]+(?:\s+[a-z0-9._-]+){0,3})",
+        r"\ba cargo(?:\s+de)?\b(?:\s*[:=-]\s*|\s+)([a-z0-9._-]+(?:\s+[a-z0-9._-]+){0,3})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, txt)
+        if m:
+            candidate = re.sub(r"\s+", " ", m.group(1)).strip(" .,:;")
+            if candidate:
+                return candidate
+    return None
+
+
 def load_user_area_division_map():
     conn = get_azure_master_connection()
     try:
@@ -1306,6 +1324,7 @@ class TicketAssistant:
         - subcategoria: Subcategoría específica (string o null)
         - prioridad: Prioridad inferida (Alta, Media, Baja, Crítica o null)
         - usuario_sugerido: username sugerido (string o null)
+          - Si el usuario dice "responsable", "encargado", "a cargo (de)" o "sugerido", mapéalo a usuario_sugerido.
         - fecha_necesidad: fecha esperada de resolución en lenguaje natural o formato fecha (string o null)
         - Si la fecha es inferible (ej: "hoy", "próximo lunes"), devuelve fecha_necesidad en formato YYYY-MM-DD.
 
@@ -1371,10 +1390,10 @@ class TicketAssistant:
             f"<b>Categoría:</b> {categoria_display}\n"
             f"<b>Subcategoría:</b> {subcategoria_display}\n"
             f"<b>Prioridad:</b> {prioridad_display}\n"
-            f"<b>Usuario sugerido:</b> {usuario_display}\n"
+            f"<b>Responsable sugerido:</b> {usuario_display}\n"
             f"<b>Fecha de necesidad:</b> {fecha_display}\n"
             f"<b>Fecha de necesidad normalizada:</b> {fecha_norm_display}\n"
-            f"<br><span style='color:#156099;'><b>💡 Confirmación rápida:</b> para crear el ticket, respondé <b>SI</b>.</span>"
+            f"<br><span style='color:#156099;'><b>💡 Confirmación rápida:</b> para crear el ticket podés escribir <b>si</b>, <b>crear</b>, <b>crear ticket</b>, <b>ok</b>, <b>dale</b>, <b>de acuerdo</b> o <b>confirmar</b>.</span>"
         )
 
         return resumen, False
@@ -1785,12 +1804,50 @@ if "last_prompt" not in st.session_state:
     st.session_state.last_prompt = ""
 if "show_confirm_buttons" not in st.session_state:
     st.session_state.show_confirm_buttons = False
+if "chat_draft_edit_mode" not in st.session_state:
+    st.session_state.chat_draft_edit_mode = False
 if "form_selected_ticket_id" not in st.session_state:
     st.session_state.form_selected_ticket_id = None
 if "ui_section" not in st.session_state:
     st.session_state.ui_section = "CHAT IA"
 
 taranto_logo_b64 = get_base64_image("assets/taranto-logo.png")
+
+
+CHAT_CONFIRM_TERMS = {
+    normalize_text("si"),
+    normalize_text("sí"),
+    normalize_text("crear"),
+    normalize_text("crear ticket"),
+    normalize_text("ok"),
+    normalize_text("dale"),
+    normalize_text("de acuerdo"),
+    normalize_text("confirmar"),
+}
+
+
+def has_active_chat_draft():
+    draft = st.session_state.ticket_draft
+    keys = [
+        "titulo",
+        "descripcion",
+        "planta",
+        "division",
+        "area",
+        "categoria",
+        "subcategoria",
+        "prioridad",
+        "usuario_sugerido",
+        "fecha_necesidad",
+    ]
+    return any(draft.get(k) not in (None, "") for k in keys)
+
+
+def reset_chat_draft():
+    for k in st.session_state.ticket_draft:
+        st.session_state.ticket_draft[k] = None
+    st.session_state.show_confirm_buttons = False
+    st.session_state.chat_draft_edit_mode = False
 
 
 def create_ticket_from_current_chat_draft(confirm_source):
@@ -1851,9 +1908,7 @@ def create_ticket_from_current_chat_draft(confirm_source):
             "content": "Listo. Ya podés cargar un nuevo ticket o tarea cuando quieras.",
         }
     )
-    for k in st.session_state.ticket_draft:
-        st.session_state.ticket_draft[k] = None
-    st.session_state.show_confirm_buttons = False
+    reset_chat_draft()
 
 
 def render_chat_mode(api_key, model_name, debug_expander):
@@ -1864,7 +1919,56 @@ def render_chat_mode(api_key, model_name, debug_expander):
             unsafe_allow_html=True,
         )
 
-    if st.session_state.show_confirm_buttons:
+    if has_active_chat_draft():
+        col_edit, col_cancel = st.columns(2)
+        with col_edit:
+            if st.button("✏️ Editar", key="btn_draft_edit"):
+                st.session_state.chat_draft_edit_mode = True
+                st.rerun()
+        with col_cancel:
+            if st.button("🗑️ Cancelar carga", key="btn_draft_cancel"):
+                reset_chat_draft()
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "OK, se canceló la carga actual. Si querés agregar una tarea o ticket, escribime el detalle.",
+                    }
+                )
+                st.rerun()
+
+    if st.session_state.chat_draft_edit_mode and has_active_chat_draft():
+        assistant = TicketAssistant(api_key, model_name)
+        resumen, _ = assistant.generate_review_message(st.session_state.ticket_draft)
+        st.markdown(
+            f'<div class="chat-bubble bot-bubble">{resumen}</div>',
+            unsafe_allow_html=True,
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("✅ Crear Ticket", key="btn_crear"):
+                create_ticket_from_current_chat_draft("Confirmado por boton")
+                st.rerun()
+        with col2:
+            if st.button("✏️ Agregar información", key="btn_mas_info"):
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "Entendido. Dime qué más quieres agregar o corregir.",
+                    }
+                )
+                st.session_state.chat_draft_edit_mode = False
+                st.rerun()
+        with col3:
+            if st.button("🗑️ Cancelar carga", key="btn_cancelar_desde_edicion"):
+                reset_chat_draft()
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "OK, se canceló la carga actual. Si querés agregar una tarea o ticket, escribime el detalle.",
+                    }
+                )
+                st.rerun()
+    elif st.session_state.show_confirm_buttons and not has_active_chat_draft():
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Crear Ticket", key="btn_crear"):
@@ -1890,12 +1994,12 @@ def render_chat_mode(api_key, model_name, debug_expander):
 
 def handle_chat_input_and_processing(api_key, model_name):
     if prompt := st.chat_input("Escribe tu solicitud/tarea aquí..."):
-        if st.session_state.show_confirm_buttons and normalize_text(prompt) == "si":
+        normalized_prompt = normalize_text(prompt)
+        if has_active_chat_draft() and normalized_prompt in CHAT_CONFIRM_TERMS:
             st.session_state.messages.append({"role": "user", "content": prompt})
-            create_ticket_from_current_chat_draft("Confirmado por SI")
+            create_ticket_from_current_chat_draft(f"Confirmado por '{normalized_prompt}'")
             st.rerun()
         st.session_state.messages.append({"role": "user", "content": prompt})
-        st.session_state.show_confirm_buttons = False
         st.rerun()
 
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
@@ -1909,6 +2013,7 @@ def handle_chat_input_and_processing(api_key, model_name):
             ai_res["ai_processing_time"] = int(p_time)
             st.session_state.last_ai_res = ai_res
             st.session_state.last_prompt = s_prompt
+            suggested_user_by_rule = extract_suggested_user_from_text(user_input)
 
             if "error" not in ai_res:
                 intencion = ai_res.get("intencion", "desconocido")
@@ -1922,6 +2027,10 @@ def handle_chat_input_and_processing(api_key, model_name):
                         v = ai_res.get(k)
                         if v is not None and v != "":
                             st.session_state.ticket_draft[k] = v
+                    if suggested_user_by_rule:
+                        st.session_state.ticket_draft["usuario_sugerido"] = (
+                            suggested_user_by_rule
+                        )
 
                     resolved_user, _ = resolve_user_candidate(
                         st.session_state.ticket_draft.get("usuario_sugerido"),
@@ -1954,8 +2063,30 @@ def handle_chat_input_and_processing(api_key, model_name):
                     )
                     if not bloqueante:
                         st.session_state.show_confirm_buttons = True
+                        st.session_state.chat_draft_edit_mode = False
                 else:
-                    bot_res = "No estoy seguro de haber entendido. ¿Podrías darme más detalles sobre el problema o solicitud?"
+                    if suggested_user_by_rule and has_active_chat_draft():
+                        st.session_state.ticket_draft["usuario_sugerido"] = (
+                            suggested_user_by_rule
+                        )
+                        resolved_user, _ = resolve_user_candidate(
+                            st.session_state.ticket_draft.get("usuario_sugerido"),
+                            st.session_state.master_indexes,
+                        )
+                        st.session_state.ticket_draft["usuario_sugerido_resuelto"] = (
+                            resolved_user
+                        )
+                        bot_res, bloqueante = assistant.generate_review_message(
+                            st.session_state.ticket_draft
+                        )
+                        if not bloqueante:
+                            st.session_state.show_confirm_buttons = True
+                            st.session_state.chat_draft_edit_mode = False
+                    else:
+                        bot_res = "No estoy seguro de haber entendido. ¿Podrías darme más detalles sobre el problema o solicitud?"
+                        if has_active_chat_draft():
+                            draft_title = st.session_state.ticket_draft.get("titulo") or "Ticket sin titulo"
+                            bot_res += f"<br><br><b>Ticket en proceso:</b> {draft_title}"
 
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_res}
