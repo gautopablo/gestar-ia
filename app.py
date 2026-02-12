@@ -1390,14 +1390,62 @@ st.markdown(
     """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Raleway:wght@600;700&display=swap');
-    :root { color-scheme: light; }
-    .stApp { background-color: #ffffff; }
+    :root {
+        color-scheme: light dark;
+        --bg-page: #F7F9FC;
+        --bg-surface: #FFFFFF;
+        --bg-elevated: #EEF3F8;
+        --text-primary: #1F2937;
+        --text-secondary: #3F4D5F;
+        --text-muted: #5F6E80;
+        --border-default: #7A889A;
+        --border-focus: #156099;
+        --brand-primary: #D52E25;
+        --brand-secondary: #156099;
+        --state-success: #2E7D32;
+        --input-bg: #FFFFFF;
+        --input-text: #1F2937;
+        --placeholder: #6B7785;
+        --chat-user-bg: #DCF8C6;
+        --chat-user-text: #1F2937;
+        --chat-bot-bg: #FFFFFF;
+        --chat-bot-text: #1F2937;
+        --bottom-bar-bg: #DCF8C6;
+        --shadow-soft: rgba(15, 23, 42, 0.08);
+        --focus-ring: rgba(21, 96, 153, 0.18);
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg-page: #12161C;
+            --bg-surface: #1A2230;
+            --bg-elevated: #222C3D;
+            --text-primary: #E6EDF7;
+            --text-secondary: #B6C2D1;
+            --text-muted: #8FA0B4;
+            --border-default: #5C6E85;
+            --border-focus: #5AA2D9;
+            --brand-primary: #F0625D;
+            --brand-secondary: #5AA2D9;
+            --state-success: #81C784;
+            --input-bg: #1A2230;
+            --input-text: #E6EDF7;
+            --placeholder: #8FA0B4;
+            --chat-user-bg: #1F5B3A;
+            --chat-user-text: #E6EDF7;
+            --chat-bot-bg: #1A2230;
+            --chat-bot-text: #E6EDF7;
+            --bottom-bar-bg: #173428;
+            --shadow-soft: rgba(0, 0, 0, 0.35);
+            --focus-ring: rgba(90, 162, 217, 0.28);
+        }
+    }
+    .stApp { background-color: var(--bg-page); }
     html, body, [class*="css"] {
         font-family: "Lato", sans-serif;
-        color: #444;
+        color: var(--text-primary);
     }
-    .stApp, .stMarkdown, .stText, p, span, label, li {
-        color: #1f2933 !important;
+    .stApp, .stMarkdown, .stText, [data-testid="stMarkdownContainer"] {
+        color: var(--text-primary) !important;
     }
     h1, h2, h3, .raleway {
         font-family: "Raleway", sans-serif;
@@ -1407,49 +1455,49 @@ st.markdown(
         padding-top: 0.8rem;
     }
     .taranto-header {
-        background: #ffffff;
-        border-bottom: 3px solid #d52e25;
+        background: var(--bg-surface);
+        border-bottom: 3px solid var(--brand-primary);
         border-radius: 10px;
         padding: 0.75rem 1rem;
         margin-bottom: 1rem;
-        box-shadow: 0 2px 15px rgba(0,0,0,0.04);
+        box-shadow: 0 2px 15px var(--shadow-soft);
     }
     [data-testid="stVerticalBlock"]:has(.taranto-header-marker) {
-        background: #ffffff;
-        border-bottom: 3px solid #d52e25;
+        background: var(--bg-surface);
+        border-bottom: 3px solid var(--brand-primary);
         border-radius: 10px;
         padding: 0.75rem 1rem 0.4rem 1rem;
         margin-bottom: 0.7rem;
-        box-shadow: 0 2px 15px rgba(0,0,0,0.04);
+        box-shadow: 0 2px 15px var(--shadow-soft);
     }
     .taranto-header-marker {
         display: none;
     }
     /* Debug visual de paneles (prueba temporal) */
     [data-testid="stVerticalBlock"]:has(.dbg-panel-header) {
-        background: #ffffff !important;
-        border: 1px solid #e5e7eb;
+        background: var(--bg-surface) !important;
+        border: 1px solid var(--border-default);
         border-radius: 10px;
         padding: 0.5rem;
     }
     [data-testid="stVerticalBlock"]:has(.dbg-panel-nav) {
-        background: #ffffff !important;
-        border: 1px solid #e5e7eb;
+        background: var(--bg-surface) !important;
+        border: 1px solid var(--border-default);
         border-radius: 10px;
         padding: 0.5rem;
         margin-top: 0.4rem;
     }
     [data-testid="stVerticalBlock"]:has(.dbg-panel-content) {
-        background: #f3f4f6 !important;
-        border: 1px solid #d1d5db;
+        background: var(--bg-elevated) !important;
+        border: 1px solid var(--border-default);
         border-radius: 10px;
         padding: 0.5rem;
         margin-top: 0.4rem;
         min-height: calc(100dvh - 290px);
     }
     [data-testid="stVerticalBlock"]:has(.dbg-panel-inner) {
-        background: #f3f4f6 !important;
-        border: 1px solid #d1d5db;
+        background: var(--bg-elevated) !important;
+        border: 1px solid var(--border-default);
         border-radius: 10px;
         padding: 0.5rem;
         margin-top: 0.4rem;
@@ -1461,7 +1509,7 @@ st.markdown(
         display: none;
     }
     .taranto-logo {
-        color: #156099;
+        color: var(--brand-secondary);
         font-family: "Raleway", sans-serif;
         font-size: 2rem;
         font-weight: 700;
@@ -1470,8 +1518,8 @@ st.markdown(
     }
     .taranto-title {
         margin: 0;
-        color: #d52e25;
-        -webkit-text-fill-color: #d52e25;
+        color: var(--brand-primary);
+        -webkit-text-fill-color: var(--brand-primary);
         text-align: center;
         font-family: "Raleway", sans-serif;
         font-size: 2rem;
@@ -1480,38 +1528,44 @@ st.markdown(
     }
     .taranto-subtitle {
         font-size: 1.05rem;
-        color: #444;
-        -webkit-text-fill-color: #444;
+        color: var(--text-secondary);
+        -webkit-text-fill-color: var(--text-secondary);
         font-weight: 400;
     }
     .v2-card {
-        background-color: #fff;
+        background-color: var(--bg-surface);
         padding: 1rem 1.1rem;
         border-radius: 10px;
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        box-shadow: 0 2px 15px rgba(0, 0, 0, 0.04);
+        border: 1px solid var(--border-default);
+        box-shadow: 0 2px 15px var(--shadow-soft);
         margin-bottom: 0.8rem;
     }
     .chat-bubble {
+        color: var(--text-primary);
         padding: 10px 14px;
         border-radius: 10px;
         margin-bottom: 8px;
         max-width: 82%;
         white-space: pre-wrap;
-        border: 1px solid rgba(128,128,128,0.2);
-        box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+        border: 1px solid var(--border-default);
+        box-shadow: 0 2px 12px var(--shadow-soft);
     }
     .user-bubble {
-        background-color: #dcf8c6;
+        background-color: var(--chat-user-bg);
+        color: var(--chat-user-text);
         margin-left: auto;
-        border-left: 3px solid #34b233;
+        border-left: 3px solid var(--state-success);
     }
     .bot-bubble {
-        background-color: #ffffff;
+        background-color: var(--chat-bot-bg);
+        color: var(--chat-bot-text);
         margin-right: auto;
-        border-left: 3px solid #d52e25;
+        border-left: 3px solid var(--brand-primary);
     }
     div.stButton > button {
+        background-color: var(--bg-elevated);
+        color: var(--text-primary);
+        border: 1px solid var(--border-default);
         border-radius: 4px;
         font-family: "Raleway", sans-serif;
         text-transform: uppercase;
@@ -1521,33 +1575,45 @@ st.markdown(
         white-space: nowrap;
     }
     div.stButton > button[kind="primary"] {
-        background-color: #d52e25;
-        border: none;
-        color: white;
+        background-color: var(--brand-primary);
+        border: 1px solid var(--brand-primary);
+        color: #ffffff;
     }
     .active-nav button {
-        background-color: #156099 !important;
-        color: white !important;
-        border: none !important;
+        background-color: var(--brand-secondary) !important;
+        color: #ffffff !important;
+        border: 1px solid var(--brand-secondary) !important;
+    }
+    div.stButton > button:hover {
+        border-color: var(--border-focus);
     }
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
     .stTabs [data-baseweb="tab"] {
-        background-color: #e9edf1;
+        background-color: var(--bg-elevated);
+        color: var(--text-secondary);
+        border: 1px solid var(--border-default);
         border-radius: 4px 4px 0 0;
         padding: 8px 16px;
         font-weight: 600;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #156099 !important;
-        color: white !important;
+        background-color: var(--brand-secondary) !important;
+        color: #ffffff !important;
+        border-color: var(--brand-secondary) !important;
+    }
+    .stTabs [aria-selected="true"] *,
+    .stTabs [aria-selected="true"] p,
+    .stTabs [aria-selected="true"] span {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
     }
     .stDataFrame {
         border-radius: 8px;
         overflow: hidden;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        border: 1px solid rgba(128,128,128,0.15);
+        box-shadow: 0 4px 12px var(--shadow-soft);
+        border: 1px solid var(--border-default);
     }
     /* Mayor contraste para campos de edición en formularios */
     div[data-baseweb="input"] > div,
@@ -1555,41 +1621,56 @@ st.markdown(
     div[data-baseweb="textarea"] > div,
     .stTextInput input,
     .stTextArea textarea {
-        background-color: #ffffff !important;
-        border: 1px solid #9aa7b5 !important;
+        background-color: var(--input-bg) !important;
+        border: 1px solid var(--border-default) !important;
     }
     .stTextInput input,
     .stTextArea textarea {
-        color: #1f2933 !important;
-        -webkit-text-fill-color: #1f2933 !important;
+        color: var(--input-text) !important;
+        -webkit-text-fill-color: var(--input-text) !important;
+    }
+    div[data-baseweb="select"] [role="combobox"],
+    div[data-baseweb="select"] [class*="singleValue"],
+    div[data-baseweb="select"] [class*="valueContainer"] {
+        color: var(--input-text) !important;
+        -webkit-text-fill-color: var(--input-text) !important;
+    }
+    div[data-baseweb="select"] [class*="placeholder"] {
+        color: var(--placeholder) !important;
+        -webkit-text-fill-color: var(--placeholder) !important;
+        opacity: 1 !important;
+    }
+    div[data-baseweb="select"] svg {
+        color: var(--text-muted) !important;
+        fill: var(--text-muted) !important;
     }
     div[data-testid="stChatInput"] input,
     div[data-testid="stChatInput"] textarea {
-        color: #1f2933 !important;
-        -webkit-text-fill-color: #1f2933 !important;
+        color: var(--input-text) !important;
+        -webkit-text-fill-color: var(--input-text) !important;
     }
     div[data-baseweb="input"] > div:focus-within,
     div[data-baseweb="select"] > div:focus-within,
     div[data-baseweb="textarea"] > div:focus-within {
-        border-color: #156099 !important;
-        box-shadow: 0 0 0 2px rgba(21, 96, 153, 0.18) !important;
+        border-color: var(--border-focus) !important;
+        box-shadow: 0 0 0 2px var(--focus-ring) !important;
     }
     .stTextInput input::placeholder,
     .stTextArea textarea::placeholder,
     div[data-testid="stChatInput"] input::placeholder,
     div[data-testid="stChatInput"] textarea::placeholder {
-        color: #6b7785 !important;
+        color: var(--placeholder) !important;
         opacity: 1 !important;
     }
     input:-webkit-autofill,
     textarea:-webkit-autofill,
     select:-webkit-autofill {
-        -webkit-text-fill-color: #1f2933 !important;
+        -webkit-text-fill-color: var(--input-text) !important;
         transition: background-color 9999s ease-out 0s;
     }
     [data-testid="stBottomBlockContainer"] {
-        background: #dcf8c6 !important;
-        border-top: 1px solid #34b233;
+        background: var(--bottom-bar-bg) !important;
+        border-top: 1px solid var(--state-success);
     }
     header { visibility: hidden; }
     footer { visibility: hidden; }
@@ -1598,7 +1679,7 @@ st.markdown(
     [data-testid="collapsedControl"] { display: none !important; }
     .top-meta {
         text-align: right;
-        color: #156099;
+        color: var(--brand-secondary);
         font-size: 0.95rem;
         font-weight: 700;
     }
