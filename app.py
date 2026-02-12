@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import base64
 import os
 import re
+import time
 import unicodedata
 from dotenv import load_dotenv
 try:
@@ -45,10 +46,19 @@ def get_azure_master_connection():
         raise RuntimeError("Falta ODBC_CONN_STR en Streamlit Secrets o .env")
     if pyodbc is None:
         raise RuntimeError("pyodbc no está instalado")
-    try:
-        return pyodbc.connect(conn_str)
-    except Exception as e:
-        raise RuntimeError(f"No se pudo conectar a Azure SQL por ODBC: {e}")
+    attempts = 3
+    backoff_seconds = [0, 2, 5]
+    last_error = None
+    for i in range(attempts):
+        if backoff_seconds[i] > 0:
+            time.sleep(backoff_seconds[i])
+        try:
+            return pyodbc.connect(conn_str)
+        except Exception as e:
+            last_error = e
+    raise RuntimeError(
+        f"No se pudo conectar a Azure SQL por ODBC tras {attempts} intentos: {last_error}"
+    )
 
 
 def get_master_schema():
@@ -1711,14 +1721,30 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+startup_placeholder = st.empty()
+db_boot_error = None
+needs_master_bootstrap = "master_data" not in st.session_state
+if needs_master_bootstrap:
+    with startup_placeholder.container():
+        st.info("Cargando... conectando con Azure SQL y preparando datos maestros.")
 try:
     init_db()
+    st.session_state.db_connected = True
 except Exception as db_err:
-    st.error(f"❌ Error de conexión a Azure SQL: {db_err}")
+    st.session_state.db_connected = False
+    db_boot_error = db_err
+
+if st.session_state.db_connected and needs_master_bootstrap:
+    st.session_state.master_data = load_master_data()
+    st.session_state.master_indexes = build_master_indexes(st.session_state.master_data)
+elif "master_data" not in st.session_state:
+    startup_placeholder.empty()
+    st.error(f"❌ Error de conexión a Azure SQL: {db_boot_error}")
+    st.info("No hay datos en caché para continuar. Reintentá la conexión.")
+    if st.button("Reintentar conexión", key="retry_db_bootstrap"):
+        st.rerun()
     st.stop()
 
-if "master_data" not in st.session_state:
-    st.session_state.master_data = load_master_data()
 if "master_indexes" not in st.session_state:
     st.session_state.master_indexes = build_master_indexes(st.session_state.master_data)
 else:
@@ -1732,6 +1758,12 @@ else:
         st.session_state.master_indexes = build_master_indexes(
             st.session_state.master_data
         )
+
+startup_placeholder.empty()
+if db_boot_error and "master_data" in st.session_state:
+    st.warning(
+        "⚠️ Conexión Azure SQL inestable. Se continúa con datos maestros en caché de la sesión."
+    )
 
 try:
     ensure_session_user(st.session_state.master_data)
@@ -1758,6 +1790,10 @@ if not api_key:
 with st.sidebar:
     st.title("⚙️ Configuración")
     st.info(f"Base de datos: Azure SQL ({get_master_schema()})")
+    if st.session_state.get("db_connected", False):
+        st.success("✅ Conexión SQL activa")
+    else:
+        st.warning("⚠️ SQL con problemas transitorios (modo caché de sesión)")
     model_name = st.selectbox(
         "Modelo", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
     )
@@ -1767,11 +1803,16 @@ with st.sidebar:
 
     st.divider()
     if st.button("Refrescar Maestros"):
-        st.session_state.master_data = load_master_data()
-        st.session_state.master_indexes = build_master_indexes(
-            st.session_state.master_data
-        )
-        st.success("Datos maestros actualizados.")
+        try:
+            st.session_state.master_data = load_master_data()
+            st.session_state.master_indexes = build_master_indexes(
+                st.session_state.master_data
+            )
+            st.session_state.db_connected = True
+            st.success("Datos maestros actualizados.")
+        except Exception as refresh_err:
+            st.session_state.db_connected = False
+            st.error(f"No se pudieron refrescar maestros: {refresh_err}")
     st.subheader("🛠️ Debug Area")
     debug_expander = st.expander("Estado Interno", expanded=False)
 
