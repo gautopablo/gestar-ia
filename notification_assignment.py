@@ -15,7 +15,9 @@ _WORKER_THREAD = None
 _RUNTIME = {}
 
 
-def build_assignment_dedupe_key(ticket_id, old_assignee_id, new_assignee_id, ticket_updated_at):
+def build_assignment_dedupe_key(
+    ticket_id, old_assignee_id, new_assignee_id, ticket_updated_at
+):
     if isinstance(ticket_updated_at, datetime):
         updated_at_iso = ticket_updated_at.isoformat()
     else:
@@ -95,12 +97,12 @@ def _release_stale_claims():
             SET
                 p.FieldName = 'NotificacionPendiente',
                 p.ChangedAt = SYSUTCDATETIME()
-            FROM {_qname('TicketLogs')} p
+            FROM {_qname("TicketLogs")} p
             WHERE p.FieldName = 'NotificacionEnProceso'
               AND DATEDIFF(SECOND, p.ChangedAt, SYSUTCDATETIME()) >= ?
               AND NOT EXISTS (
                   SELECT 1
-                  FROM {_qname('TicketLogs')} e
+                  FROM {_qname("TicketLogs")} e
                   WHERE e.TicketId = p.TicketId
                     AND e.FieldName = 'NotificacionEnviada'
                     AND e.OldValue = p.OldValue
@@ -122,14 +124,15 @@ def _claim_one_pending():
             WITH next_pending AS (
                 SELECT TOP 1
                     p.LogId
-                FROM {_qname('TicketLogs')} p WITH (UPDLOCK, READPAST, ROWLOCK)
+                FROM {_qname("TicketLogs")} p WITH (UPDLOCK, READPAST, ROWLOCK)
                 WHERE p.FieldName = 'NotificacionPendiente'
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM {_qname('TicketLogs')} e
-                      WHERE e.TicketId = p.TicketId
-                        AND e.FieldName = 'NotificacionEnviada'
-                        AND e.OldValue = p.OldValue
+                      FROM {_qname("TicketLogs")} sub
+                      WHERE sub.TicketId = p.TicketId
+                        AND sub.OldValue = p.OldValue
+                        AND sub.FieldName IN ('NotificacionEnProceso', 'NotificacionEnviada')
+                        AND sub.LogId <> p.LogId
                   )
                 ORDER BY p.ChangedAt ASC, p.LogId ASC
             )
@@ -143,7 +146,7 @@ def _claim_one_pending():
                 inserted.UserId,
                 inserted.OldValue,
                 inserted.NewValue
-            FROM {_qname('TicketLogs')} p
+            FROM {_qname("TicketLogs")} p
             INNER JOIN next_pending np ON np.LogId = p.LogId;
             """
         )
@@ -154,11 +157,15 @@ def _claim_one_pending():
         conn.close()
 
 
-def _process_one_claimed(claim_log_id, ticket_id, actor_user_id, dedupe_key, payload_raw):
+def _process_one_claimed(
+    claim_log_id, ticket_id, actor_user_id, dedupe_key, payload_raw
+):
     payload = _safe_json_loads(payload_raw)
     assignee_id = payload.get("new_assignee_id")
     if assignee_id is None:
-        _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "ERROR:missing_new_assignee_id")
+        _insert_delivery_log(
+            ticket_id, actor_user_id, dedupe_key, "ERROR:missing_new_assignee_id"
+        )
         return
 
     title = payload.get("title") or ""
@@ -166,7 +173,9 @@ def _process_one_claimed(claim_log_id, ticket_id, actor_user_id, dedupe_key, pay
     assigned_by = payload.get("assigned_by") or "Sistema"
     recipient_email, _recipient_username = _fetch_user_contact(assignee_id)
     if not recipient_email:
-        _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "ERROR:assignee_without_email")
+        _insert_delivery_log(
+            ticket_id, actor_user_id, dedupe_key, "ERROR:assignee_without_email"
+        )
         return
 
     subject = f"Nuevo ticket asignado #{ticket_id}"
@@ -179,7 +188,9 @@ def _process_one_claimed(claim_log_id, ticket_id, actor_user_id, dedupe_key, pay
     )
 
     try:
-        _send_html_mail_smtp(to_email=recipient_email, subject=subject, html_body=body_html)
+        _send_html_mail_smtp(
+            to_email=recipient_email, subject=subject, html_body=body_html
+        )
         _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "OK")
     except Exception as exc:
         err_detail = str(exc).strip()
@@ -224,7 +235,7 @@ def _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, result):
         cursor = conn.cursor()
         cursor.execute(
             f"""
-            INSERT INTO {_qname('TicketLogs')} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+            INSERT INTO {_qname("TicketLogs")} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
             VALUES (?, ?, 0, 'NotificacionEnviada', ?, ?)
             """,
             (ticket_id, actor_user_id, str(dedupe_key), str(result)),
@@ -246,7 +257,7 @@ def _build_assignment_mail_html(ticket_id, title, estado, assigned_by, app_url):
         f"<p><strong>Estado:</strong> {estado_safe}</p>"
         f"<p><strong>Asignado por:</strong> {assigned_by_safe}</p>"
         f"<p>Ingresa a la aplicacion para gestionarlo:<br>"
-        f"<a href=\"{app_url_safe}\">{app_url_safe}</a></p>"
+        f'<a href="{app_url_safe}">{app_url_safe}</a></p>'
         f"<p>Este es un mensaje automatico.</p>"
     )
 
