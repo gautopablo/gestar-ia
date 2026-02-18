@@ -106,42 +106,120 @@ def _process_pending_notifications_batch(batch_size=20):
 
 
 def _process_one_pending(pending_log_id, ticket_id, actor_user_id, dedupe_key, payload_raw):
-    payload = _safe_json_loads(payload_raw)
-    assignee_id = payload.get("new_assignee_id")
-    if assignee_id is None:
-        _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "ERROR:missing_new_assignee_id")
-        return
+    lock_conn = None
+    lock_cursor = None
+    lock_resource = _build_lock_resource(ticket_id, dedupe_key)
+    try:
+        lock_conn, lock_cursor = _acquire_dedupe_lock(lock_resource)
+        if lock_conn is None:
+            # Otro worker ya está procesando este dedupe_key.
+            return
+        if _delivery_log_exists(lock_cursor, ticket_id, dedupe_key):
+            return
 
-    title = payload.get("title") or ""
-    estado = payload.get("estado") or ""
-    assigned_by = payload.get("assigned_by") or "Sistema"
-    recipient_email, _recipient_username = _fetch_user_contact(assignee_id)
-    if not recipient_email:
-        _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "ERROR:assignee_without_email")
-        return
+        payload = _safe_json_loads(payload_raw)
+        assignee_id = payload.get("new_assignee_id")
+        if assignee_id is None:
+            _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "ERROR:missing_new_assignee_id")
+            return
 
-    subject = f"Nuevo ticket asignado #{ticket_id}"
-    body_html = _build_assignment_mail_html(
-        ticket_id=ticket_id,
-        title=title,
-        estado=estado,
-        assigned_by=assigned_by,
-        app_url=_RUNTIME.get("app_url", ""),
+        title = payload.get("title") or ""
+        estado = payload.get("estado") or ""
+        assigned_by = payload.get("assigned_by") or "Sistema"
+        recipient_email, _recipient_username = _fetch_user_contact(assignee_id)
+        if not recipient_email:
+            _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "ERROR:assignee_without_email")
+            return
+
+        subject = f"Nuevo ticket asignado #{ticket_id}"
+        body_html = _build_assignment_mail_html(
+            ticket_id=ticket_id,
+            title=title,
+            estado=estado,
+            assigned_by=assigned_by,
+            app_url=_RUNTIME.get("app_url", ""),
+        )
+
+        try:
+            _send_html_mail_smtp(to_email=recipient_email, subject=subject, html_body=body_html)
+            _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "OK")
+        except Exception as exc:
+            err_detail = str(exc).strip()
+            if len(err_detail) > 240:
+                err_detail = err_detail[:240]
+            _insert_delivery_log(
+                ticket_id,
+                actor_user_id,
+                dedupe_key,
+                f"ERROR:{err_detail or 'smtp_send_failed'}",
+            )
+    finally:
+        if lock_cursor is not None:
+            try:
+                _release_dedupe_lock(lock_cursor, lock_resource)
+            except Exception:
+                pass
+        if lock_conn is not None:
+            lock_conn.close()
+
+
+def _build_lock_resource(ticket_id, dedupe_key):
+    key_text = str(dedupe_key or "")
+    resource = f"gestar:notif:{ticket_id}:{key_text}"
+    # sp_getapplock limita @Resource a NVARCHAR(255)
+    return resource[:255]
+
+
+def _acquire_dedupe_lock(lock_resource, timeout_ms=0):
+    conn = _RUNTIME["get_connection"]()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            DECLARE @result INT;
+            EXEC @result = sp_getapplock
+                @Resource = ?,
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Session',
+                @LockTimeout = ?;
+            SELECT @result;
+            """,
+            (lock_resource, int(timeout_ms)),
+        )
+        row = cursor.fetchone()
+        result_code = int(row[0]) if row and row[0] is not None else -999
+        if result_code < 0:
+            conn.close()
+            return None, None
+        return conn, cursor
+    except Exception:
+        conn.close()
+        raise
+
+
+def _release_dedupe_lock(cursor, lock_resource):
+    cursor.execute(
+        """
+        EXEC sp_releaseapplock
+            @Resource = ?,
+            @LockOwner = 'Session';
+        """,
+        (lock_resource,),
     )
 
-    try:
-        _send_html_mail_smtp(to_email=recipient_email, subject=subject, html_body=body_html)
-        _insert_delivery_log(ticket_id, actor_user_id, dedupe_key, "OK")
-    except Exception as exc:
-        err_detail = str(exc).strip()
-        if len(err_detail) > 240:
-            err_detail = err_detail[:240]
-        _insert_delivery_log(
-            ticket_id,
-            actor_user_id,
-            dedupe_key,
-            f"ERROR:{err_detail or 'smtp_send_failed'}",
-        )
+
+def _delivery_log_exists(cursor, ticket_id, dedupe_key):
+    cursor.execute(
+        f"""
+        SELECT TOP 1 1
+        FROM {_qname('TicketLogs')}
+        WHERE TicketId = ?
+          AND FieldName = 'NotificacionEnviada'
+          AND OldValue = ?
+        """,
+        (ticket_id, str(dedupe_key)),
+    )
+    return cursor.fetchone() is not None
 
 
 def _safe_json_loads(raw_text):
