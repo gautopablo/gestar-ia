@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import json
 import google.generativeai as genai
@@ -8,7 +9,12 @@ import os
 import re
 import time
 import unicodedata
+from html import escape as html_escape
 from dotenv import load_dotenv
+from notification_assignment import (
+    build_assignment_dedupe_key,
+    start_assignment_notification_worker_once,
+)
 try:
     import pyodbc
 except ImportError:
@@ -75,6 +81,135 @@ def get_base64_image(image_path):
             return base64.b64encode(img_file.read()).decode()
     except Exception:
         return ""
+
+
+def render_printable_dataframe(df, title, state_key):
+    if df is None or df.empty:
+        return
+
+    print_columns = [
+        "TicketId",
+        "Title",
+        "Description",
+        "Area",
+        "Prioridad",
+        "Estado",
+        "NeedByAt",
+    ]
+    available_columns = [col for col in print_columns if col in df.columns]
+    if not available_columns:
+        return
+    df_print = df[available_columns].copy()
+
+    show_key = f"{state_key}_show"
+    if show_key not in st.session_state:
+        st.session_state[show_key] = False
+
+    btn_col_1, btn_col_2 = st.columns([1, 6], gap="small")
+    with btn_col_1:
+        if st.button("Vista imprimible", key=f"{state_key}_btn_open"):
+            st.session_state[show_key] = not st.session_state[show_key]
+    with btn_col_2:
+        if st.session_state[show_key]:
+            st.caption("Se mostró la vista imprimible. Usá el botón Imprimir del panel.")
+
+    if not st.session_state[show_key]:
+        return
+
+    base_col_width = 120
+    col_widths = []
+    for col in df_print.columns:
+        if col == "Title":
+            width_px = base_col_width * 2
+        elif col == "Description":
+            width_px = base_col_width * 3
+        else:
+            width_px = base_col_width
+        col_widths.append(f"<col style=\"width:{width_px}px\">")
+
+    colgroup_html = "<colgroup>" + "".join(col_widths) + "</colgroup>"
+    table_html = df_print.to_html(index=False, escape=True, classes="print-table")
+    table_html = table_html.replace(">", ">" + colgroup_html, 1)
+    title_safe = html_escape(title)
+    html_doc = f"""
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        :root {{
+          --text: #111827;
+          --line: #d1d5db;
+          --header-bg: #f3f4f6;
+        }}
+        body {{
+          margin: 0;
+          padding: 16px;
+          font-family: Segoe UI, Calibri, Arial, sans-serif;
+          color: var(--text);
+          background: #ffffff;
+        }}
+        .toolbar {{
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 12px;
+        }}
+        .title {{
+          font-size: 18px;
+          font-weight: 600;
+        }}
+        button {{
+          border: 1px solid #111827;
+          background: #111827;
+          color: #ffffff;
+          padding: 8px 12px;
+          border-radius: 6px;
+          cursor: pointer;
+        }}
+        table.print-table {{
+          border-collapse: collapse;
+          width: 100%;
+          font-size: 12px;
+        }}
+        table.print-table th,
+        table.print-table td {{
+          border: 1px solid var(--line);
+          padding: 6px 8px;
+          vertical-align: top;
+          text-align: left;
+        }}
+        table.print-table th {{
+          background: var(--header-bg);
+          font-weight: 700;
+        }}
+        @media print {{
+          @page {{
+            size: A4 landscape;
+            margin: 10mm;
+          }}
+          .toolbar {{
+            display: none;
+          }}
+          table.print-table thead {{
+            display: table-header-group;
+          }}
+          table.print-table tr {{
+            page-break-inside: avoid;
+          }}
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="toolbar">
+        <div class="title">{title_safe}</div>
+        <button onclick="window.print()">Imprimir</button>
+      </div>
+      {table_html}
+    </body>
+    </html>
+    """
+    components.html(html_doc, height=620, scrolling=True)
 
 
 def get_users_by_id(master_data):
@@ -663,6 +798,7 @@ def fetch_tickets_for_form(filters, limit=None):
     try:
         where = []
         params = []
+        archived_status_name = "archivado"
 
         if filters.get("estado_id"):
             where.append("t.EstadoId = ?")
@@ -680,6 +816,9 @@ def fetch_tickets_for_form(filters, limit=None):
             where.append("(t.Title LIKE ? OR t.Description LIKE ?)")
             pattern = f"%{filters['query']}%"
             params.extend([pattern, pattern])
+        if not filters.get("include_archived", False):
+            where.append("ISNULL(LOWER(LTRIM(RTRIM(e.Nombre))), '') <> ?")
+            params.append(archived_status_name)
 
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         top_clause = f"TOP {int(limit)}" if limit else ""
@@ -782,6 +921,16 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
         row = cursor.fetchone()
         return row[0] if row else _normalize_cmp(raw_value)
 
+    def _lookup_username(cursor, user_id):
+        if user_id is None:
+            return "Sistema"
+        cursor.execute(
+            f"SELECT TOP 1 Username FROM {qname('Users')} WHERE UserId = ?",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else "Sistema"
+
     backend = get_ticket_log_backend()
     conn = get_azure_master_connection()
     try:
@@ -834,6 +983,12 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
             f"UPDATE {qname('Tickets')} SET {', '.join(set_parts)} WHERE TicketId = ?",
             params,
         )
+        cursor.execute(
+            f"SELECT TOP 1 UpdatedAt FROM {qname('Tickets')} WHERE TicketId = ?",
+            (ticket_id,),
+        )
+        updated_at_row = cursor.fetchone()
+        ticket_updated_at = updated_at_row[0] if updated_at_row else None
 
         field_alias = {
             "Title": "Title",
@@ -847,6 +1002,15 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
             "AssigneeId": "Assignee",
             "NeedByAt": "NeedByAt",
         }
+
+        assignee_change = next(
+            (
+                (old_value, new_value)
+                for field_name, old_value, new_value in changed_items
+                if field_name == "AssigneeId"
+            ),
+            None,
+        )
 
         for field_name, old_value, new_value in changed_items:
             old_disp = _lookup_display_value(cursor, field_name, old_value)
@@ -864,6 +1028,64 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
                     None if new_disp is None else str(new_disp),
                 ),
             )
+
+        if assignee_change:
+            old_assignee_id, new_assignee_id = assignee_change
+            effective_estado_id = updates.get("EstadoId", current.get("EstadoId"))
+            effective_estado_name = _lookup_display_value(
+                cursor, "EstadoId", effective_estado_id
+            )
+            is_excluded_status = normalize_text(effective_estado_name) in {
+                "cerrado",
+                "cancelado",
+            }
+
+            if (new_assignee_id is not None) and (not is_excluded_status):
+                old_assignee_name = _lookup_display_value(
+                    cursor, "AssigneeId", old_assignee_id
+                )
+                new_assignee_name = _lookup_display_value(
+                    cursor, "AssigneeId", new_assignee_id
+                )
+                cursor.execute(
+                    f"""
+                    INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+                    VALUES (?, ?, 0, 'CambioAsignacion', ?, ?)
+                    """,
+                    (
+                        ticket_id,
+                        actor_user_id,
+                        None if old_assignee_name is None else str(old_assignee_name),
+                        None if new_assignee_name is None else str(new_assignee_name),
+                    ),
+                )
+
+                dedupe_key = build_assignment_dedupe_key(
+                    ticket_id=ticket_id,
+                    old_assignee_id=old_assignee_id,
+                    new_assignee_id=new_assignee_id,
+                    ticket_updated_at=ticket_updated_at,
+                )
+                payload = {
+                    "ticket_id": ticket_id,
+                    "old_assignee_id": old_assignee_id,
+                    "new_assignee_id": new_assignee_id,
+                    "title": updates.get("Title", current.get("Title")),
+                    "estado": effective_estado_name,
+                    "assigned_by": _lookup_username(cursor, actor_user_id),
+                }
+                cursor.execute(
+                    f"""
+                    INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+                    VALUES (?, ?, 0, 'NotificacionPendiente', ?, ?)
+                    """,
+                    (
+                        ticket_id,
+                        actor_user_id,
+                        str(dedupe_key),
+                        json.dumps(payload, ensure_ascii=False),
+                    ),
+                )
 
         conn.commit()
     finally:
@@ -1771,6 +1993,24 @@ except Exception as user_err:
     st.error(f"❌ Error de usuarios de sesión: {user_err}")
     st.stop()
 
+try:
+    poll_seconds = int(get_secret("NOTIF_POLL_SECONDS", 5))
+except Exception:
+    poll_seconds = 5
+start_assignment_notification_worker_once(
+    get_connection=get_azure_master_connection,
+    get_schema=get_master_schema,
+    app_url=get_secret("APP_BASE_URL", ""),
+    poll_seconds=poll_seconds,
+    smtp_config={
+        "SMTP_HOST": get_secret("SMTP_HOST", ""),
+        "SMTP_PORT": get_secret("SMTP_PORT", 587),
+        "SMTP_USER": get_secret("SMTP_USER", ""),
+        "SMTP_PASSWORD": get_secret("SMTP_PASSWORD", ""),
+        "SMTP_SENDER": get_secret("SMTP_SENDER", ""),
+    },
+)
+
 # Cargar API Key: prioridad Streamlit Secrets (deploy), fallback .env (local)
 try:
     api_key = st.secrets.get("GOOGLE_API_KEY")
@@ -2181,6 +2421,9 @@ def render_form_mode():
     subcategorias = st.session_state.master_data.get("subcategorias", [])
     prioridades = st.session_state.master_data.get("prioridades", [])
     estados = st.session_state.master_data.get("estados", [])
+    estados_bandeja = [
+        e for e in estados if normalize_text(e.get("nombre")) != "archivado"
+    ]
 
     with ticket_tab:
         with st.form("form_create_ticket", clear_on_submit=True):
@@ -2264,7 +2507,7 @@ def render_form_mode():
         if st.session_state.form_selected_ticket_id is None:
             c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
-                estado_opt = ["Todos"] + [e["nombre"] for e in estados]
+                estado_opt = ["Todos"] + [e["nombre"] for e in estados_bandeja]
                 estado_sel = st.selectbox("Estado", estado_opt, key="form_filter_estado")
             with c2:
                 prio_opt = ["Todas"] + [p["nombre"] for p in prioridades]
@@ -2281,7 +2524,7 @@ def render_form_mode():
                 q = st.text_input("Buscar", key="form_filter_query")
 
             estado_id = next(
-                (e["id"] for e in estados if e["nombre"] == estado_sel), None
+                (e["id"] for e in estados_bandeja if e["nombre"] == estado_sel), None
             ) if estado_sel != "Todos" else None
             prioridad_id = next(
                 (p["id"] for p in prioridades if p["nombre"] == prio_filter), None
@@ -2316,6 +2559,11 @@ def render_form_mode():
                 selection_mode="single-row",
                 on_select="rerun",
                 key="form_ticket_grid",
+            )
+            render_printable_dataframe(
+                df=df,
+                title=f"Bandeja de tickets filtrados ({len(df)} registros)",
+                state_key="form_ticket_grid_print",
             )
             selection = st.session_state.get("form_ticket_grid", {}).get("selection", {})
             selected_rows = selection.get("rows", [])
