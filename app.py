@@ -216,7 +216,169 @@ def get_users_by_id(master_data):
     return {u["id"]: u for u in master_data.get("usuarios", []) if u.get("id") is not None}
 
 
+def _decode_easy_auth_claims(raw_value):
+    if not raw_value:
+        return {}
+    try:
+        payload = str(raw_value).strip()
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.b64decode(payload).decode("utf-8")
+        data = json.loads(decoded)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_easy_auth_identity():
+    headers = {}
+    ctx = getattr(st, "context", None)
+    raw_headers = getattr(ctx, "headers", None) if ctx is not None else None
+    if raw_headers is not None:
+        try:
+            for k, v in raw_headers.items():
+                headers[str(k).lower()] = str(v)
+        except Exception:
+            headers = {}
+
+    principal_name = headers.get("x-ms-client-principal-name", "").strip()
+    principal_id = headers.get("x-ms-client-principal-id", "").strip()
+    principal_raw = headers.get("x-ms-client-principal", "")
+    principal_data = _decode_easy_auth_claims(principal_raw)
+    claims = principal_data.get("claims", []) if isinstance(principal_data, dict) else []
+
+    claim_map = {}
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        typ = str(claim.get("typ", "")).strip().lower()
+        val = str(claim.get("val", "")).strip()
+        if typ and val and typ not in claim_map:
+            claim_map[typ] = val
+
+    if not principal_name:
+        principal_name = claim_map.get("preferred_username", "") or claim_map.get("upn", "")
+    if not principal_id:
+        principal_id = claim_map.get("oid", "") or claim_map.get(
+            "http://schemas.microsoft.com/identity/claims/objectidentifier", ""
+        )
+
+    email = (
+        claim_map.get("email", "")
+        or claim_map.get("upn", "")
+        or claim_map.get("preferred_username", "")
+        or principal_name
+    )
+    if not (email or principal_name or principal_id):
+        return None
+
+    return {
+        "email": email.strip(),
+        "principal_name": principal_name.strip(),
+        "principal_id": principal_id.strip(),
+    }
+
+
+def find_user_by_email(master_data, email_value):
+    target = normalize_text(email_value)
+    if not target:
+        return None
+    for user in master_data.get("usuarios", []):
+        if normalize_text(user.get("email")) == target:
+            return user
+    return None
+
+
+def _build_username_base(email_value, principal_name):
+    candidate = str(email_value or principal_name or "solicitante").strip().lower()
+    if "@" in candidate:
+        candidate = candidate.split("@", 1)[0]
+    candidate = re.sub(r"[^a-z0-9._-]+", "_", candidate).strip("._-")
+    return candidate or "solicitante"
+
+
+def _next_available_username(cursor, base_username):
+    base = base_username[:80] or "solicitante"
+    for i in range(1, 500):
+        candidate = base if i == 1 else f"{base}_{i}"
+        cursor.execute(
+            f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE Username = ?",
+            (candidate,),
+        )
+        if not cursor.fetchone():
+            return candidate
+    raise RuntimeError("No se pudo generar un username disponible para auto-alta.")
+
+
+def create_solicitante_user(email_value, principal_name):
+    email_clean = str(email_value or "").strip().lower()
+    if not email_clean:
+        raise RuntimeError("No se pudo auto-crear usuario: email vacío.")
+
+    conn = get_azure_master_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT TOP 1 UserId, Username, Email, Role
+            FROM {qname('Users')}
+            WHERE LOWER(Email) = LOWER(?)
+            """,
+            (email_clean,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {"id": row[0], "username": row[1], "email": row[2], "role": row[3]}
+
+        username = _next_available_username(
+            cursor, _build_username_base(email_clean, principal_name)
+        )
+        cursor.execute(
+            f"""
+            INSERT INTO {qname('Users')} (Username, Email, Role, Active)
+            OUTPUT INSERTED.UserId
+            VALUES (?, ?, ?, 1)
+            """,
+            (username, email_clean, "Solicitante"),
+        )
+        new_id = cursor.fetchone()[0]
+        conn.commit()
+        return {
+            "id": new_id,
+            "username": username,
+            "email": email_clean,
+            "role": "Solicitante",
+        }
+    finally:
+        conn.close()
+
+
 def ensure_session_user(master_data):
+    auth_identity = get_easy_auth_identity()
+    st.session_state.auth_identity = auth_identity
+    if auth_identity:
+        login_value = auth_identity.get("email") or auth_identity.get("principal_name")
+        mapped_user = find_user_by_email(master_data, login_value)
+        if mapped_user:
+            st.session_state.current_user_id = mapped_user["id"]
+            st.session_state.auth_user_mapped = True
+            st.session_state.auth_user_autocreated = False
+            return
+
+        created_user = create_solicitante_user(
+            email_value=login_value,
+            principal_name=auth_identity.get("principal_name"),
+        )
+        master_data.setdefault("usuarios", []).append(created_user)
+        if "master_indexes" in st.session_state:
+            st.session_state.master_indexes = build_master_indexes(master_data)
+        st.session_state.current_user_id = created_user["id"]
+        st.session_state.auth_user_mapped = True
+        st.session_state.auth_user_autocreated = True
+        st.session_state.auth_user_autocreated_email = created_user.get("email")
+        return
+
+    st.session_state.auth_user_mapped = False
+    st.session_state.auth_user_autocreated = False
     users = master_data.get("usuarios", [])
     if not users:
         raise RuntimeError("No hay usuarios activos en la base para iniciar sesión.")
@@ -1993,6 +2155,12 @@ except Exception as user_err:
     st.error(f"❌ Error de usuarios de sesión: {user_err}")
     st.stop()
 
+if st.session_state.get("auth_user_autocreated", False):
+    autocreated_email = st.session_state.get("auth_user_autocreated_email", "")
+    st.info(
+        f"Usuario autenticado {autocreated_email} dado de alta automáticamente con rol 'Solicitante'."
+    )
+
 try:
     poll_seconds = int(get_secret("NOTIF_POLL_SECONDS", 5))
 except Exception:
@@ -2987,10 +3155,8 @@ def render_form_mode():
             st.error(f"Error de logs: {e}")
 
 
-session_users = st.session_state.master_data.get("usuarios", [])
 session_user = get_session_user(st.session_state.master_data)
-session_labels = [u["username"] for u in session_users]
-current_label = session_user["username"] if session_user else None
+auth_identity = st.session_state.get("auth_identity")
 
 with st.container():
     st.markdown("<div class='dbg-panel-header'></div>", unsafe_allow_html=True)
@@ -3014,22 +3180,21 @@ with st.container():
             [3.2, 1.6, 2.2], gap="small", vertical_alignment="center"
         )
         with ux1:
-            if session_labels:
-                idx = session_labels.index(current_label) if current_label in session_labels else 0
-                selected_session_label = st.selectbox(
-                    "Usuario de sesión",
-                    session_labels,
-                    index=idx,
-                    key="header_session_user",
+            if session_user:
+                full_name = format_full_name_from_username(session_user.get("username"))
+                role = session_user.get("role") or "Sin rol"
+                email = session_user.get("email") or ""
+                subtitle = email
+                if auth_identity and auth_identity.get("principal_name"):
+                    subtitle = auth_identity.get("principal_name")
+                st.caption("Usuario logueado")
+                st.markdown(
+                    f"**{full_name}**  \n`{role}`  \n{subtitle}",
+                    unsafe_allow_html=False,
                 )
-                if selected_session_label != current_label:
-                    new_user = next(
-                        (u for u in session_users if u["username"] == selected_session_label),
-                        None,
-                    )
-                    if new_user:
-                        st.session_state.current_user_id = new_user["id"]
-                        st.rerun()
+            else:
+                st.caption("Usuario logueado")
+                st.markdown("No identificado")
         with ux2:
             cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
             st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
