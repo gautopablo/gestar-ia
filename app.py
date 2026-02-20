@@ -15,6 +15,8 @@ from notification_assignment import (
     build_assignment_dedupe_key,
     start_assignment_notification_worker_once,
 )
+from master_data_admin import render_admin_panel
+
 try:
     import pyodbc
 except ImportError:
@@ -26,6 +28,7 @@ load_dotenv()
 # ==========================================
 # 1. CONFIGURACIÓN Y BASE DE DATOS
 # ==========================================
+
 
 def normalize_text(value):
     if value is None:
@@ -111,7 +114,9 @@ def render_printable_dataframe(df, title, state_key):
             st.session_state[show_key] = not st.session_state[show_key]
     with btn_col_2:
         if st.session_state[show_key]:
-            st.caption("Se mostró la vista imprimible. Usá el botón Imprimir del panel.")
+            st.caption(
+                "Se mostró la vista imprimible. Usá el botón Imprimir del panel."
+            )
 
     if not st.session_state[show_key]:
         return
@@ -125,7 +130,7 @@ def render_printable_dataframe(df, title, state_key):
             width_px = base_col_width * 3
         else:
             width_px = base_col_width
-        col_widths.append(f"<col style=\"width:{width_px}px\">")
+        col_widths.append(f'<col style="width:{width_px}px">')
 
     colgroup_html = "<colgroup>" + "".join(col_widths) + "</colgroup>"
     table_html = df_print.to_html(index=False, escape=True, classes="print-table")
@@ -213,7 +218,9 @@ def render_printable_dataframe(df, title, state_key):
 
 
 def get_users_by_id(master_data):
-    return {u["id"]: u for u in master_data.get("usuarios", []) if u.get("id") is not None}
+    return {
+        u["id"]: u for u in master_data.get("usuarios", []) if u.get("id") is not None
+    }
 
 
 def _decode_easy_auth_claims(raw_value):
@@ -244,7 +251,9 @@ def get_easy_auth_identity():
     principal_id = headers.get("x-ms-client-principal-id", "").strip()
     principal_raw = headers.get("x-ms-client-principal", "")
     principal_data = _decode_easy_auth_claims(principal_raw)
-    claims = principal_data.get("claims", []) if isinstance(principal_data, dict) else []
+    claims = (
+        principal_data.get("claims", []) if isinstance(principal_data, dict) else []
+    )
 
     claim_map = {}
     for claim in claims:
@@ -256,7 +265,9 @@ def get_easy_auth_identity():
             claim_map[typ] = val
 
     if not principal_name:
-        principal_name = claim_map.get("preferred_username", "") or claim_map.get("upn", "")
+        principal_name = claim_map.get("preferred_username", "") or claim_map.get(
+            "upn", ""
+        )
     if not principal_id:
         principal_id = claim_map.get("oid", "") or claim_map.get(
             "http://schemas.microsoft.com/identity/claims/objectidentifier", ""
@@ -319,22 +330,29 @@ def create_solicitante_user(email_value, principal_name):
         cursor = conn.cursor()
         cursor.execute(
             f"""
-            SELECT TOP 1 UserId, Username, Email, Role
-            FROM {qname('Users')}
+            SELECT TOP 1 UserId, Username, Email, Role, AreaId, DivisionId
+            FROM {qname("Users")}
             WHERE LOWER(Email) = LOWER(?)
             """,
             (email_clean,),
         )
         row = cursor.fetchone()
         if row:
-            return {"id": row[0], "username": row[1], "email": row[2], "role": row[3]}
+            return {
+                "id": row[0],
+                "username": row[1],
+                "email": row[2],
+                "role": row[3],
+                "area_id": row[4],
+                "division_id": row[5],
+            }
 
         username = _next_available_username(
             cursor, _build_username_base(email_clean, principal_name)
         )
         cursor.execute(
             f"""
-            INSERT INTO {qname('Users')} (Username, Email, Role, Active)
+            INSERT INTO {qname("Users")} (Username, Email, Role, Active)
             OUTPUT INSERTED.UserId
             VALUES (?, ?, ?, 1)
             """,
@@ -347,6 +365,8 @@ def create_solicitante_user(email_value, principal_name):
             "username": username,
             "email": email_clean,
             "role": "Solicitante",
+            "area_id": None,
+            "division_id": None,
         }
     finally:
         conn.close()
@@ -360,6 +380,8 @@ def ensure_session_user(master_data):
         mapped_user = find_user_by_email(master_data, login_value)
         if mapped_user:
             st.session_state.current_user_id = mapped_user["id"]
+            st.session_state.current_user_role = mapped_user.get("role", "Solicitante")
+            st.session_state.current_user_area_id = mapped_user.get("area_id")
             st.session_state.auth_user_mapped = True
             st.session_state.auth_user_autocreated = False
             return
@@ -372,6 +394,8 @@ def ensure_session_user(master_data):
         if "master_indexes" in st.session_state:
             st.session_state.master_indexes = build_master_indexes(master_data)
         st.session_state.current_user_id = created_user["id"]
+        st.session_state.current_user_role = created_user.get("role", "Solicitante")
+        st.session_state.current_user_area_id = created_user.get("area_id")
         st.session_state.auth_user_mapped = True
         st.session_state.auth_user_autocreated = True
         st.session_state.auth_user_autocreated_email = created_user.get("email")
@@ -386,6 +410,12 @@ def ensure_session_user(master_data):
     current_id = st.session_state.get("current_user_id")
     if current_id not in users_by_id:
         st.session_state.current_user_id = users[0]["id"]
+    # Cargar rol y área del usuario activo (solo si NO hay simulación activa)
+    if not st.session_state.get("_simulating_role"):
+        active_user = users_by_id.get(st.session_state.current_user_id)
+        if active_user:
+            st.session_state.current_user_role = active_user.get("role", "Solicitante")
+            st.session_state.current_user_area_id = active_user.get("area_id")
 
 
 def get_session_user(master_data):
@@ -689,6 +719,7 @@ def load_master_data():
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
+
         def run_fetchall(sql):
             cursor.execute(sql)
             return cursor.fetchall()
@@ -737,9 +768,16 @@ def load_master_data():
                 )
             ],
             "usuarios": [
-                {"id": row[0], "username": row[1], "email": row[2], "role": row[3]}
+                {
+                    "id": row[0],
+                    "username": row[1],
+                    "email": row[2],
+                    "role": row[3],
+                    "area_id": row[4],
+                    "division_id": row[5],
+                }
                 for row in run_fetchall(
-                    f"SELECT UserId, Username, Email, Role FROM {qname('Users')} WHERE Active = 1"
+                    f"SELECT UserId, Username, Email, Role, AreaId, DivisionId FROM {qname('Users')} WHERE Active = 1"
                 )
             ],
         }
@@ -923,7 +961,7 @@ def insert_ticket_record(draft, ids, metadata):
 
         cursor.execute(
             f"""
-            INSERT INTO {qname('Tickets')} (
+            INSERT INTO {qname("Tickets")} (
                 Title, Description, RequesterId, SuggestedAssigneeId, AssigneeId,
                 PlantaId, AreaId, CategoriaId, SubcategoriaId, PrioridadId, EstadoId,
                 ConfidenceScore, OriginalPrompt, AiProcessingTime, ConversationId, NeedByAt
@@ -962,6 +1000,29 @@ def fetch_tickets_for_form(filters, limit=None):
         params = []
         archived_status_name = "archivado"
 
+        # ── Filtros de visibilidad por rol ──
+        user_role = st.session_state.get("current_user_role", "Solicitante")
+        user_area_id = st.session_state.get("current_user_area_id")
+        user_id = st.session_state.get("current_user_id")
+
+        if user_role == "Solicitante":
+            # Solo ve tickets propios
+            if user_id:
+                where.append("t.RequesterId = ?")
+                params.append(user_id)
+        elif user_role in ("Analista", "Jefe"):
+            # Ve tickets de su área + tickets huérfanos (sin área ni asignado)
+            if user_area_id:
+                where.append(
+                    "(t.AreaId = ? OR (t.AreaId IS NULL AND t.AssigneeId IS NULL))"
+                )
+                params.append(user_area_id)
+            else:
+                # Analista/Jefe sin área asignada: solo ve tickets huérfanos
+                where.append("(t.AreaId IS NULL AND t.AssigneeId IS NULL)")
+        # Director y Administrador ven todo — sin filtro adicional
+
+        # ── Filtros del formulario ──
         if filters.get("estado_id"):
             where.append("t.EstadoId = ?")
             params.append(filters["estado_id"])
@@ -978,9 +1039,17 @@ def fetch_tickets_for_form(filters, limit=None):
             where.append("(t.Title LIKE ? OR t.Description LIKE ?)")
             pattern = f"%{filters['query']}%"
             params.extend([pattern, pattern])
-        if not filters.get("include_archived", False):
-            where.append("ISNULL(LOWER(LTRIM(RTRIM(e.Nombre))), '') <> ?")
-            params.append(archived_status_name)
+
+        # Archivado: excluir salvo que sea Admin con include_archived
+        if not filters.get("include_archived", False) or user_role != "Administrador":
+            if user_role != "Administrador":
+                # Nunca mostrar Archivado a no-admin
+                where.append("ISNULL(LOWER(LTRIM(RTRIM(e.Nombre))), '') <> ?")
+                params.append(archived_status_name)
+            elif not filters.get("include_archived", False):
+                # Admin sin filtro explícito: también excluir por defecto
+                where.append("ISNULL(LOWER(LTRIM(RTRIM(e.Nombre))), '') <> ?")
+                params.append(archived_status_name)
 
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         top_clause = f"TOP {int(limit)}" if limit else ""
@@ -1002,17 +1071,17 @@ def fetch_tickets_for_form(filters, limit=None):
                 usug.Username AS Sugerido,
                 t.NeedByAt,
                 t.CreatedAt
-            FROM {qname('Tickets')} t
-            LEFT JOIN {qname('Plantas')} p ON t.PlantaId = p.PlantaId
-            LEFT JOIN {qname('Areas')} a ON t.AreaId = a.AreaId
-            LEFT JOIN {qname('Divisiones')} d ON a.DivisionId = d.DivisionId
-            LEFT JOIN {qname('Categorias')} c ON t.CategoriaId = c.CategoriaId
-            LEFT JOIN {qname('Subcategorias')} s ON t.SubcategoriaId = s.SubcategoriaId
-            LEFT JOIN {qname('Prioridades')} pr ON t.PrioridadId = pr.PrioridadId
-            LEFT JOIN {qname('Estados')} e ON t.EstadoId = e.EstadoId
-            LEFT JOIN {qname('Users')} ureq ON t.RequesterId = ureq.UserId
-            LEFT JOIN {qname('Users')} uasg ON t.AssigneeId = uasg.UserId
-            LEFT JOIN {qname('Users')} usug ON t.SuggestedAssigneeId = usug.UserId
+            FROM {qname("Tickets")} t
+            LEFT JOIN {qname("Plantas")} p ON t.PlantaId = p.PlantaId
+            LEFT JOIN {qname("Areas")} a ON t.AreaId = a.AreaId
+            LEFT JOIN {qname("Divisiones")} d ON a.DivisionId = d.DivisionId
+            LEFT JOIN {qname("Categorias")} c ON t.CategoriaId = c.CategoriaId
+            LEFT JOIN {qname("Subcategorias")} s ON t.SubcategoriaId = s.SubcategoriaId
+            LEFT JOIN {qname("Prioridades")} pr ON t.PrioridadId = pr.PrioridadId
+            LEFT JOIN {qname("Estados")} e ON t.EstadoId = e.EstadoId
+            LEFT JOIN {qname("Users")} ureq ON t.RequesterId = ureq.UserId
+            LEFT JOIN {qname("Users")} uasg ON t.AssigneeId = uasg.UserId
+            LEFT JOIN {qname("Users")} usug ON t.SuggestedAssigneeId = usug.UserId
             {where_sql}
             ORDER BY t.TicketId DESC
         """
@@ -1034,7 +1103,7 @@ def fetch_ticket_for_edit(ticket_id):
             SELECT
                 TicketId, Title, Description, PlantaId, AreaId, CategoriaId, SubcategoriaId,
                 PrioridadId, EstadoId, SuggestedAssigneeId, AssigneeId, NeedByAt
-            FROM {qname('Tickets')}
+            FROM {qname("Tickets")}
             WHERE TicketId = ?
             """,
             (ticket_id,),
@@ -1102,7 +1171,7 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
             SELECT
                 Title, Description, PlantaId, AreaId, CategoriaId, SubcategoriaId,
                 PrioridadId, EstadoId, AssigneeId, NeedByAt
-            FROM {qname('Tickets')}
+            FROM {qname("Tickets")}
             WHERE TicketId = ?
             """,
             (ticket_id,),
@@ -1179,7 +1248,7 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
             new_disp = _lookup_display_value(cursor, field_name, new_value)
             cursor.execute(
                 f"""
-                INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+                INSERT INTO {backend["table"]} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
                 VALUES (?, ?, 0, ?, ?, ?)
                 """,
                 (
@@ -1211,7 +1280,7 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
                 )
                 cursor.execute(
                     f"""
-                    INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+                    INSERT INTO {backend["table"]} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
                     VALUES (?, ?, 0, 'CambioAsignacion', ?, ?)
                     """,
                     (
@@ -1238,7 +1307,7 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
                 }
                 cursor.execute(
                     f"""
-                    INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+                    INSERT INTO {backend["table"]} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
                     VALUES (?, ?, 0, 'NotificacionPendiente', ?, ?)
                     """,
                     (
@@ -1292,8 +1361,8 @@ def fetch_ticket_comments(ticket_id):
                 l.FieldName AS Campo,
                 l.OldValue AS [Valor Anterior],
                 l.NewValue AS [Nuevo Valor]
-            FROM {backend['table']} l
-            LEFT JOIN {qname('Users')} u ON l.UserId = u.UserId
+            FROM {backend["table"]} l
+            LEFT JOIN {qname("Users")} u ON l.UserId = u.UserId
             WHERE TicketId = ?
             ORDER BY l.ChangedAt DESC
             """,
@@ -1314,7 +1383,7 @@ def add_ticket_comment(ticket_id, comment, user_id=None):
         cursor = conn.cursor()
         cursor.execute(
             f"""
-            INSERT INTO {backend['table']} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
+            INSERT INTO {backend["table"]} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
             VALUES (?, ?, 0, 'comment', NULL, ?)
             """,
             (ticket_id, user_id, comment),
@@ -1324,7 +1393,9 @@ def add_ticket_comment(ticket_id, comment, user_id=None):
         conn.close()
 
 
-def _log_ticket_change(cursor, backend_table, ticket_id, user_id, field_name, old_value, new_value):
+def _log_ticket_change(
+    cursor, backend_table, ticket_id, user_id, field_name, old_value, new_value
+):
     cursor.execute(
         f"""
         INSERT INTO {backend_table} (TicketId, UserId, IsAi, FieldName, OldValue, NewValue)
@@ -1363,7 +1434,9 @@ def _subtask_lookup_display_value(cursor, field_name, raw_value):
 
 
 def _subtask_compact_repr(cursor, row_dict):
-    assignee = _subtask_lookup_display_value(cursor, "AssigneeId", row_dict.get("AssigneeId"))
+    assignee = _subtask_lookup_display_value(
+        cursor, "AssigneeId", row_dict.get("AssigneeId")
+    )
     estado = _subtask_lookup_display_value(cursor, "EstadoId", row_dict.get("EstadoId"))
     return (
         f"SubtaskId={row_dict.get('SubtaskId')} | "
@@ -1424,11 +1497,11 @@ def fetch_subtasks(ticket_id):
                 s.UpdatedAt,
                 s.UpdatedBy,
                 uu.Username AS UpdatedByUsername
-            FROM {backend['table']} s
-            LEFT JOIN {qname('Users')} u ON s.AssigneeId = u.UserId
-            LEFT JOIN {qname('Estados')} e ON s.EstadoId = e.EstadoId
-            LEFT JOIN {qname('Users')} uc ON s.CreatedBy = uc.UserId
-            LEFT JOIN {qname('Users')} uu ON s.UpdatedBy = uu.UserId
+            FROM {backend["table"]} s
+            LEFT JOIN {qname("Users")} u ON s.AssigneeId = u.UserId
+            LEFT JOIN {qname("Estados")} e ON s.EstadoId = e.EstadoId
+            LEFT JOIN {qname("Users")} uc ON s.CreatedBy = uc.UserId
+            LEFT JOIN {qname("Users")} uu ON s.UpdatedBy = uu.UserId
             WHERE s.TicketId = ?
             ORDER BY s.SortOrder ASC, s.SubtaskId ASC
             """,
@@ -1460,7 +1533,7 @@ def create_subtask(ticket_id, payload, actor_user_id):
 
         cursor.execute(
             f"""
-            INSERT INTO {backend['table']} (
+            INSERT INTO {backend["table"]} (
                 TicketId, Title, Description, AssigneeId, EstadoId,
                 NeedByAt, CompletedAt, SortOrder, CreatedBy, UpdatedBy
             )
@@ -1489,7 +1562,7 @@ def create_subtask(ticket_id, payload, actor_user_id):
                 SELECT TOP 1
                     SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
                     NeedByAt, CompletedAt, SortOrder
-                FROM {backend['table']}
+                FROM {backend["table"]}
                 WHERE SubtaskId = ?
                 """,
                 (new_subtask_id,),
@@ -1551,7 +1624,7 @@ def update_subtask(subtask_id, updates, actor_user_id):
             SELECT TOP 1
                 SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
                 NeedByAt, CompletedAt, SortOrder
-            FROM {backend['table']}
+            FROM {backend["table"]}
             WHERE SubtaskId = ?
             """,
             (subtask_id,),
@@ -1601,8 +1674,8 @@ def update_subtask(subtask_id, updates, actor_user_id):
 
         cursor.execute(
             f"""
-            UPDATE {backend['table']}
-            SET {', '.join(set_parts)}
+            UPDATE {backend["table"]}
+            SET {", ".join(set_parts)}
             WHERE SubtaskId = ?
             """,
             params,
@@ -1636,7 +1709,7 @@ def delete_subtask(subtask_id, actor_user_id=None):
             SELECT TOP 1
                 SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
                 NeedByAt, CompletedAt, SortOrder
-            FROM {backend['table']}
+            FROM {backend["table"]}
             WHERE SubtaskId = ?
             """,
             (subtask_id,),
@@ -2155,6 +2228,22 @@ except Exception as user_err:
     st.error(f"❌ Error de usuarios de sesión: {user_err}")
     st.stop()
 
+# ── Sidebar visible solo para Administrador ──
+_sidebar_real_role = st.session_state.get("_real_user_role") or st.session_state.get(
+    "current_user_role"
+)
+if _sidebar_real_role == "Administrador":
+    st.markdown(
+        """
+    <style>
+        [data-testid="stSidebar"] { display: block !important; }
+        [data-testid="stSidebarCollapsedControl"] { display: block !important; }
+        [data-testid="collapsedControl"] { display: block !important; }
+    </style>
+    """,
+        unsafe_allow_html=True,
+    )
+
 if st.session_state.get("auth_user_autocreated", False):
     autocreated_email = st.session_state.get("auth_user_autocreated_email", "")
     st.info(
@@ -2194,35 +2283,8 @@ if not api_key:
     )
     st.stop()
 
-# Sidebar
-with st.sidebar:
-    st.title("⚙️ Configuración")
-    st.info(f"Base de datos: Azure SQL ({get_master_schema()})")
-    if st.session_state.get("db_connected", False):
-        st.success("✅ Conexión SQL activa")
-    else:
-        st.warning("⚠️ SQL con problemas transitorios (modo caché de sesión)")
-    model_name = st.selectbox(
-        "Modelo", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
-    )
-
-    # Mostrar estado de API Key (sin revelar la key completa)
-    st.success(f"✅ API Key configurada ({api_key[:8]}...)")
-
-    st.divider()
-    if st.button("Refrescar Maestros"):
-        try:
-            st.session_state.master_data = load_master_data()
-            st.session_state.master_indexes = build_master_indexes(
-                st.session_state.master_data
-            )
-            st.session_state.db_connected = True
-            st.success("Datos maestros actualizados.")
-        except Exception as refresh_err:
-            st.session_state.db_connected = False
-            st.error(f"No se pudieron refrescar maestros: {refresh_err}")
-    st.subheader("🛠️ Debug Area")
-    debug_expander = st.expander("Estado Interno", expanded=False)
+# Modelo IA fijo (no expuesto al usuario)
+model_name = "gemini-2.0-flash"
 
 # Inicializar Estado de Sesión
 if "messages" not in st.session_state:
@@ -2259,6 +2321,12 @@ if "show_confirm_buttons" not in st.session_state:
     st.session_state.show_confirm_buttons = False
 if "chat_draft_edit_mode" not in st.session_state:
     st.session_state.chat_draft_edit_mode = False
+if "chat_flow_state" not in st.session_state:
+    st.session_state.chat_flow_state = (
+        "IDLE"  # IDLE | DRAFT_ACTIVE | SUBMITTING | ERROR
+    )
+if "chat_error_message" not in st.session_state:
+    st.session_state.chat_error_message = ""
 if "form_selected_ticket_id" not in st.session_state:
     st.session_state.form_selected_ticket_id = None
 if "ui_section" not in st.session_state:
@@ -2320,8 +2388,11 @@ def has_active_chat_draft():
 def reset_chat_draft():
     for k in st.session_state.ticket_draft:
         st.session_state.ticket_draft[k] = None
+    # Compatibilidad con flags legacy
     st.session_state.show_confirm_buttons = False
     st.session_state.chat_draft_edit_mode = False
+    st.session_state.chat_flow_state = "IDLE"
+    st.session_state.chat_error_message = ""
 
 
 def create_ticket_from_current_chat_draft(confirm_source):
@@ -2385,6 +2456,39 @@ def create_ticket_from_current_chat_draft(confirm_source):
     reset_chat_draft()
 
 
+def set_chat_flow_from_draft():
+    has_draft = has_active_chat_draft()
+    state = st.session_state.get("chat_flow_state", "IDLE")
+    if state == "SUBMITTING":
+        return
+    if has_draft and state == "IDLE":
+        st.session_state.chat_flow_state = "DRAFT_ACTIVE"
+    elif (not has_draft) and state in {"DRAFT_ACTIVE", "ERROR"}:
+        st.session_state.chat_flow_state = "IDLE"
+
+
+def try_submit_current_draft(confirm_source):
+    if not has_active_chat_draft():
+        return False
+    if st.session_state.get("chat_flow_state") == "SUBMITTING":
+        return False
+    st.session_state.chat_flow_state = "SUBMITTING"
+    st.session_state.chat_error_message = ""
+    try:
+        create_ticket_from_current_chat_draft(confirm_source)
+        return True
+    except Exception as submit_err:
+        st.session_state.chat_flow_state = "ERROR"
+        st.session_state.chat_error_message = str(submit_err)
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": f"❌ No se pudo crear el ticket: {submit_err}",
+            }
+        )
+        return False
+
+
 def render_chat_mode(api_key, model_name, debug_expander):
     for msg in st.session_state.messages:
         role_class = "user-bubble" if msg["role"] == "user" else "bot-bubble"
@@ -2393,47 +2497,37 @@ def render_chat_mode(api_key, model_name, debug_expander):
             unsafe_allow_html=True,
         )
 
-    if has_active_chat_draft():
-        col_edit, col_cancel = st.columns(2)
-        with col_edit:
-            if st.button("✏️ Editar", key="btn_draft_edit"):
-                st.session_state.chat_draft_edit_mode = True
-                st.rerun()
-        with col_cancel:
-            if st.button("🗑️ Cancelar carga", key="btn_draft_cancel"):
-                reset_chat_draft()
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "OK, se canceló la carga actual. Si querés agregar una tarea o ticket, escribime el detalle.",
-                    }
-                )
-                st.rerun()
+    set_chat_flow_from_draft()
+    state = st.session_state.get("chat_flow_state", "IDLE")
 
-    if st.session_state.chat_draft_edit_mode and has_active_chat_draft():
-        assistant = TicketAssistant(api_key, model_name)
-        resumen, _ = assistant.generate_review_message(st.session_state.ticket_draft)
-        st.markdown(
-            f'<div class="chat-bubble bot-bubble">{resumen}</div>',
-            unsafe_allow_html=True,
-        )
+    if has_active_chat_draft():
+        if state == "ERROR" and st.session_state.get("chat_error_message"):
+            st.error(st.session_state.get("chat_error_message"))
+
+        submitting = state == "SUBMITTING"
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("✅ Crear Ticket", key="btn_crear"):
-                create_ticket_from_current_chat_draft("Confirmado por boton")
+            if st.button("✅ Crear Ticket", key="btn_crear", disabled=submitting):
+                try_submit_current_draft("Confirmado por boton")
                 st.rerun()
         with col2:
-            if st.button("✏️ Agregar información", key="btn_mas_info"):
+            if st.button(
+                "✏️ Agregar información", key="btn_mas_info", disabled=submitting
+            ):
                 st.session_state.messages.append(
                     {
                         "role": "assistant",
                         "content": "Entendido. Dime qué más quieres agregar o corregir.",
                     }
                 )
-                st.session_state.chat_draft_edit_mode = False
+                st.session_state.chat_flow_state = "DRAFT_ACTIVE"
                 st.rerun()
         with col3:
-            if st.button("🗑️ Cancelar carga", key="btn_cancelar_desde_edicion"):
+            if st.button(
+                "🗑️ Cancelar carga",
+                key="btn_cancelar_desde_edicion",
+                disabled=submitting,
+            ):
                 reset_chat_draft()
                 st.session_state.messages.append(
                     {
@@ -2442,28 +2536,14 @@ def render_chat_mode(api_key, model_name, debug_expander):
                     }
                 )
                 st.rerun()
-    elif st.session_state.show_confirm_buttons and not has_active_chat_draft():
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ Crear Ticket", key="btn_crear"):
-                create_ticket_from_current_chat_draft("Confirmado por boton")
-                st.rerun()
-        with col2:
-            if st.button("✏️ Agregar información", key="btn_mas_info"):
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "Entendido. Dime qué más quieres agregar o corregir.",
-                    }
-                )
-                st.session_state.show_confirm_buttons = False
-                st.rerun()
 
-    with debug_expander:
-        st.write("**Borrador Actual:**", st.session_state.ticket_draft)
-        st.write("**Última Respuesta JSON IA:**", st.session_state.last_ai_res)
-        st.write("**Prompt Enviado:**")
-        st.code(st.session_state.last_prompt or "", language="text")
+    if debug_expander is not None:
+        with debug_expander:
+            st.write("**Estado Chat:**", st.session_state.get("chat_flow_state"))
+            st.write("**Borrador Actual:**", st.session_state.ticket_draft)
+            st.write("**Última Respuesta JSON IA:**", st.session_state.last_ai_res)
+            st.write("**Prompt Enviado:**")
+            st.code(st.session_state.last_prompt or "", language="text")
 
 
 def handle_chat_input_and_processing(api_key, model_name):
@@ -2471,7 +2551,7 @@ def handle_chat_input_and_processing(api_key, model_name):
         normalized_prompt = normalize_text(prompt)
         if has_active_chat_draft() and normalized_prompt in CHAT_CONFIRM_TERMS:
             st.session_state.messages.append({"role": "user", "content": prompt})
-            create_ticket_from_current_chat_draft(f"Confirmado por '{normalized_prompt}'")
+            try_submit_current_draft(f"Confirmado por '{normalized_prompt}'")
             st.rerun()
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.rerun()
@@ -2544,8 +2624,7 @@ def handle_chat_input_and_processing(api_key, model_name):
                         st.session_state.ticket_draft
                     )
                     if not bloqueante:
-                        st.session_state.show_confirm_buttons = True
-                        st.session_state.chat_draft_edit_mode = False
+                        st.session_state.chat_flow_state = "DRAFT_ACTIVE"
                 else:
                     if suggested_user_by_rule and has_active_chat_draft():
                         st.session_state.ticket_draft["usuario_sugerido"] = (
@@ -2562,19 +2641,26 @@ def handle_chat_input_and_processing(api_key, model_name):
                             st.session_state.ticket_draft
                         )
                         if not bloqueante:
-                            st.session_state.show_confirm_buttons = True
-                            st.session_state.chat_draft_edit_mode = False
+                            st.session_state.chat_flow_state = "DRAFT_ACTIVE"
                     else:
                         bot_res = "No estoy seguro de haber entendido. ¿Podrías darme más detalles sobre el problema o solicitud?"
                         if has_active_chat_draft():
-                            draft_title = st.session_state.ticket_draft.get("titulo") or "Ticket sin titulo"
-                            bot_res += f"<br><br><b>Ticket en proceso:</b> {draft_title}"
+                            draft_title = (
+                                st.session_state.ticket_draft.get("titulo")
+                                or "Ticket sin titulo"
+                            )
+                            bot_res += (
+                                f"<br><br><b>Ticket en proceso:</b> {draft_title}"
+                            )
 
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_res}
                 )
+                set_chat_flow_from_draft()
                 st.rerun()
             else:
+                st.session_state.chat_flow_state = "ERROR"
+                st.session_state.chat_error_message = ai_res["error"]
                 st.sidebar.error(f"Error de API: {ai_res['error']}")
 
 
@@ -2640,7 +2726,9 @@ def render_form_mode():
                     "subcategoria": subcat_sel or None,
                     "prioridad": prio_sel or None,
                     "usuario_sugerido": user_sel or None,
-                    "fecha_necesidad": fecha_sel.strftime("%Y-%m-%d") if fecha_sel else None,
+                    "fecha_necesidad": fecha_sel.strftime("%Y-%m-%d")
+                    if fecha_sel
+                    else None,
                     "fecha_necesidad_resuelta": None,
                 }
                 parsed = (
@@ -2676,10 +2764,14 @@ def render_form_mode():
             c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
                 estado_opt = ["Todos"] + [e["nombre"] for e in estados_bandeja]
-                estado_sel = st.selectbox("Estado", estado_opt, key="form_filter_estado")
+                estado_sel = st.selectbox(
+                    "Estado", estado_opt, key="form_filter_estado"
+                )
             with c2:
                 prio_opt = ["Todas"] + [p["nombre"] for p in prioridades]
-                prio_filter = st.selectbox("Prioridad", prio_opt, key="form_filter_prio")
+                prio_filter = st.selectbox(
+                    "Prioridad", prio_opt, key="form_filter_prio"
+                )
             with c3:
                 area_opt = ["Todas"] + [a["nombre"] for a in areas]
                 area_filter = st.selectbox("Area", area_opt, key="form_filter_area")
@@ -2691,18 +2783,29 @@ def render_form_mode():
             with c5:
                 q = st.text_input("Buscar", key="form_filter_query")
 
-            estado_id = next(
-                (e["id"] for e in estados_bandeja if e["nombre"] == estado_sel), None
-            ) if estado_sel != "Todos" else None
-            prioridad_id = next(
-                (p["id"] for p in prioridades if p["nombre"] == prio_filter), None
-            ) if prio_filter != "Todas" else None
-            area_id = next(
-                (a["id"] for a in areas if a["nombre"] == area_filter), None
-            ) if area_filter != "Todas" else None
-            suggested_assignee_id = next(
-                (u["id"] for u in users if u["username"] == sugg_filter), None
-            ) if sugg_filter != "Todos" else None
+            estado_id = (
+                next(
+                    (e["id"] for e in estados_bandeja if e["nombre"] == estado_sel),
+                    None,
+                )
+                if estado_sel != "Todos"
+                else None
+            )
+            prioridad_id = (
+                next((p["id"] for p in prioridades if p["nombre"] == prio_filter), None)
+                if prio_filter != "Todas"
+                else None
+            )
+            area_id = (
+                next((a["id"] for a in areas if a["nombre"] == area_filter), None)
+                if area_filter != "Todas"
+                else None
+            )
+            suggested_assignee_id = (
+                next((u["id"] for u in users if u["username"] == sugg_filter), None)
+                if sugg_filter != "Todos"
+                else None
+            )
 
             df = fetch_tickets_for_form(
                 {
@@ -2733,7 +2836,9 @@ def render_form_mode():
                 title=f"Bandeja de tickets filtrados ({len(df)} registros)",
                 state_key="form_ticket_grid_print",
             )
-            selection = st.session_state.get("form_ticket_grid", {}).get("selection", {})
+            selection = st.session_state.get("form_ticket_grid", {}).get(
+                "selection", {}
+            )
             selected_rows = selection.get("rows", [])
             selected_ticket_id = None
             if selected_rows:
@@ -2797,14 +2902,18 @@ def render_form_mode():
                     plantas_by_id, t.get("PlantaId")
                 )
                 planta_edit = st.selectbox(
-                    _label_with_warning("Planta", planta_key, plantas_by_id, t.get("PlantaId")),
+                    _label_with_warning(
+                        "Planta", planta_key, plantas_by_id, t.get("PlantaId")
+                    ),
                     planta_opts,
                     index=planta_idx,
                     key=planta_key,
                 )
 
                 area_key = f"edit_area_{selected_ticket_id}"
-                area_opts, area_idx = _build_select_options(areas_by_id, t.get("AreaId"))
+                area_opts, area_idx = _build_select_options(
+                    areas_by_id, t.get("AreaId")
+                )
                 area_edit = st.selectbox(
                     _label_with_warning("Area", area_key, areas_by_id, t.get("AreaId")),
                     area_opts,
@@ -2817,7 +2926,9 @@ def render_form_mode():
                     cats_by_id, t.get("CategoriaId")
                 )
                 cat_edit = st.selectbox(
-                    _label_with_warning("Categoria", cat_key, cats_by_id, t.get("CategoriaId")),
+                    _label_with_warning(
+                        "Categoria", cat_key, cats_by_id, t.get("CategoriaId")
+                    ),
                     cat_opts,
                     index=cat_idx,
                     key=cat_key,
@@ -2828,7 +2939,12 @@ def render_form_mode():
                     subcats_by_id, t.get("SubcategoriaId")
                 )
                 subcat_edit = st.selectbox(
-                    _label_with_warning("Subcategoria", subcat_key, subcats_by_id, t.get("SubcategoriaId")),
+                    _label_with_warning(
+                        "Subcategoria",
+                        subcat_key,
+                        subcats_by_id,
+                        t.get("SubcategoriaId"),
+                    ),
                     subcat_opts,
                     index=subcat_idx,
                     key=subcat_key,
@@ -2839,7 +2955,9 @@ def render_form_mode():
                     prio_by_id, t.get("PrioridadId")
                 )
                 prio_edit = st.selectbox(
-                    _label_with_warning("Prioridad", prio_key, prio_by_id, t.get("PrioridadId")),
+                    _label_with_warning(
+                        "Prioridad", prio_key, prio_by_id, t.get("PrioridadId")
+                    ),
                     prio_opts,
                     index=prio_idx,
                     key=prio_key,
@@ -2850,7 +2968,9 @@ def render_form_mode():
                     est_by_id, t.get("EstadoId")
                 )
                 estado_edit = st.selectbox(
-                    _label_with_warning("Estado", estado_key, est_by_id, t.get("EstadoId")),
+                    _label_with_warning(
+                        "Estado", estado_key, est_by_id, t.get("EstadoId")
+                    ),
                     estado_opts,
                     index=estado_idx,
                     key=estado_key,
@@ -2861,7 +2981,9 @@ def render_form_mode():
                     users_by_id, t.get("AssigneeId")
                 )
                 assignee_edit = st.selectbox(
-                    _label_with_warning("Asignado a", assignee_key, users_by_id, t.get("AssigneeId")),
+                    _label_with_warning(
+                        "Asignado a", assignee_key, users_by_id, t.get("AssigneeId")
+                    ),
                     assignee_opt,
                     index=assignee_idx,
                     key=assignee_key,
@@ -2968,9 +3090,15 @@ def render_form_mode():
 
             with sub_form_col1:
                 st.markdown("**Nueva subtarea**")
-                with st.form(f"form_subtask_create_{selected_ticket_id}", clear_on_submit=True):
-                    sub_title = st.text_input("Titulo subtarea *", key=f"sub_new_title_{selected_ticket_id}")
-                    sub_desc = st.text_area("Descripcion", key=f"sub_new_desc_{selected_ticket_id}")
+                with st.form(
+                    f"form_subtask_create_{selected_ticket_id}", clear_on_submit=True
+                ):
+                    sub_title = st.text_input(
+                        "Titulo subtarea *", key=f"sub_new_title_{selected_ticket_id}"
+                    )
+                    sub_desc = st.text_area(
+                        "Descripcion", key=f"sub_new_desc_{selected_ticket_id}"
+                    )
                     sub_assignee_label = st.selectbox(
                         "Responsable",
                         user_labels_sub,
@@ -3001,7 +3129,9 @@ def render_form_mode():
                         step=1,
                         key=f"sub_new_sort_{selected_ticket_id}",
                     )
-                    create_sub = st.form_submit_button("Agregar subtarea", type="primary")
+                    create_sub = st.form_submit_button(
+                        "Agregar subtarea", type="primary"
+                    )
 
                 if create_sub:
                     create_subtask(
@@ -3009,8 +3139,12 @@ def render_form_mode():
                         {
                             "title": sub_title,
                             "description": sub_desc or None,
-                            "assignee_id": _label_to_id_sub(users_by_id_sub, sub_assignee_label),
-                            "estado_id": _label_to_id_sub(states_by_id_sub, sub_state_label),
+                            "assignee_id": _label_to_id_sub(
+                                users_by_id_sub, sub_assignee_label
+                            ),
+                            "estado_id": _label_to_id_sub(
+                                states_by_id_sub, sub_state_label
+                            ),
                             "need_by_at": _date_to_eod(sub_need_by_date),
                             "completed_at": _date_to_eod(sub_completed_date),
                             "sort_order": int(sub_sort_order),
@@ -3103,7 +3237,9 @@ def render_form_mode():
                             step=1,
                             key=f"sub_edit_sort_{selected_ticket_id}",
                         )
-                        update_sub = st.form_submit_button("Guardar subtarea", type="primary")
+                        update_sub = st.form_submit_button(
+                            "Guardar subtarea", type="primary"
+                        )
 
                     if update_sub:
                         update_subtask(
@@ -3111,8 +3247,12 @@ def render_form_mode():
                             {
                                 "Title": sub_edit_title,
                                 "Description": sub_edit_desc or None,
-                                "AssigneeId": _label_to_id_sub(users_by_id_sub, sub_edit_assignee),
-                                "EstadoId": _label_to_id_sub(states_by_id_sub, sub_edit_estado),
+                                "AssigneeId": _label_to_id_sub(
+                                    users_by_id_sub, sub_edit_assignee
+                                ),
+                                "EstadoId": _label_to_id_sub(
+                                    states_by_id_sub, sub_edit_estado
+                                ),
                                 "NeedByAt": _date_to_eod(sub_edit_need_by),
                                 "CompletedAt": _date_to_eod(sub_edit_completed),
                                 "SortOrder": int(sub_edit_sort),
@@ -3132,7 +3272,13 @@ def render_form_mode():
             else:
                 st.dataframe(
                     comments[
-                        ["FechaHora", "Usuario", "Campo", "Valor Anterior", "Nuevo Valor"]
+                        [
+                            "FechaHora",
+                            "Usuario",
+                            "Campo",
+                            "Valor Anterior",
+                            "Nuevo Valor",
+                        ]
                     ],
                     width="stretch",
                     height=180,
@@ -3176,9 +3322,15 @@ with st.container():
             unsafe_allow_html=True,
         )
     with head3:
-        ux1, ux2, ux3 = st.columns(
-            [3.2, 1.6, 2.2], gap="small", vertical_alignment="center"
-        )
+        is_admin = st.session_state.get("current_user_role") == "Administrador"
+        if is_admin:
+            ux1, ux2, ux3, ux4 = st.columns(
+                [3.2, 1.4, 2.0, 1.2], gap="small", vertical_alignment="center"
+            )
+        else:
+            ux1, ux2, ux3 = st.columns(
+                [3.2, 1.6, 2.2], gap="small", vertical_alignment="center"
+            )
         with ux1:
             if session_user:
                 full_name = format_full_name_from_username(session_user.get("username"))
@@ -3203,60 +3355,152 @@ with st.container():
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
         with ux3:
-            cls = "active-nav" if st.session_state.ui_section == "MODO FORMULARIO" else ""
+            cls = (
+                "active-nav" if st.session_state.ui_section == "MODO FORMULARIO" else ""
+            )
             st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
-            if st.button("MODO FORMULARIO", key="main_nav_form", use_container_width=True):
+            if st.button(
+                "MODO FORMULARIO", key="main_nav_form", use_container_width=True
+            ):
                 st.session_state.ui_section = "MODO FORMULARIO"
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
+        if is_admin:
+            with ux4:
+                cls = "active-nav" if st.session_state.ui_section == "ADMIN" else ""
+                st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+                if st.button("ADMIN", key="main_nav_admin", use_container_width=True):
+                    st.session_state.ui_section = "ADMIN"
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
 with st.container():
     st.markdown("<div class='dbg-panel-content'></div>", unsafe_allow_html=True)
     if st.session_state.ui_section == "CHAT IA":
-        render_chat_mode(api_key, model_name, debug_expander)
+        render_chat_mode(api_key, model_name, None)
+    elif st.session_state.ui_section == "ADMIN":
+        if st.session_state.get("current_user_role") == "Administrador":
+            render_admin_panel()
+        else:
+            st.error(
+                "Acceso denegado. Solo el Administrador puede acceder a esta sección."
+            )
     else:
         render_form_mode()
 
 if st.session_state.ui_section == "CHAT IA":
     handle_chat_input_and_processing(api_key, model_name)
 
-# Panel izquierdo (sidebar): tabla de tickets al final
+# Panel izquierdo (sidebar): simulador de rol / impersonación
 with st.sidebar:
-    st.divider()
-    st.subheader("Tickets Cargados")
-    conn = None
-    try:
-        conn = get_azure_master_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT
-                t.TicketId AS Ticket,
-                t.Title AS Titulo,
-                p.Nombre AS Planta,
-                a.Nombre AS Area,
-                c.Nombre AS Categoria,
-                pr.Nombre AS Prioridad,
-                e.Nombre AS Estado,
-                t.NeedByAt AS FechaNecesidad
-            FROM {qname('Tickets')} t
-            LEFT JOIN {qname('Plantas')} p ON t.PlantaId = p.PlantaId
-            LEFT JOIN {qname('Areas')} a ON t.AreaId = a.AreaId
-            LEFT JOIN {qname('Categorias')} c ON t.CategoriaId = c.CategoriaId
-            LEFT JOIN {qname('Prioridades')} pr ON t.PrioridadId = pr.PrioridadId
-            LEFT JOIN {qname('Estados')} e ON t.EstadoId = e.EstadoId
-            ORDER BY t.TicketId DESC
-            """
+    # ── Determinar si el usuario real es Administrador ──
+    _real_role = st.session_state.get("_real_user_role")
+    _is_real_admin = (
+        st.session_state.get("current_user_role") == "Administrador"
+        if _real_role is None
+        else _real_role == "Administrador"
+    )
+    if _is_real_admin:
+        st.markdown("### 🔧 Simulador de Rol")
+
+        # ── Preparar datos ──
+        all_users = st.session_state.master_data.get("usuarios", [])
+        user_labels = ["(ninguno — modo manual)"] + [
+            f"{u['username']} ({u.get('role', '?')})" for u in all_users
+        ]
+        all_roles = ["Solicitante", "Analista", "Jefe", "Director", "Administrador"]
+        areas_list = [
+            (a["id"], a["nombre"])
+            for a in st.session_state.master_data.get("areas", [])
+        ]
+        area_labels = ["(sin área)"] + [name for _, name in areas_list]
+
+        # ── Selector de usuario a impersonar ──
+        sim_user_label = st.selectbox(
+            "Impersonar usuario",
+            user_labels,
+            key="_sim_user_select",
+            help="Seleccioná un usuario para ver exactamente lo que él/ella ve.",
         )
-        rows = cursor.fetchall()
-        columns = [col[0] for col in cursor.description]
-        tickets_df = pd.DataFrame.from_records(rows, columns=columns)
-        if tickets_df.empty:
-            st.caption("No hay tickets cargados.")
-        else:
-            st.dataframe(tickets_df, width="stretch", height=260)
-    except Exception as err:
-        st.caption(f"No se pudo cargar tickets: {err}")
-    finally:
-        if conn is not None:
-            conn.close()
+
+        # ── Modo manual: rol + área (cuando no se impersona) ──
+        is_manual = sim_user_label == "(ninguno — modo manual)"
+        if is_manual:
+            current_sim_role = st.session_state.get(
+                "current_user_role", "Administrador"
+            )
+            sim_role = st.selectbox(
+                "Simular rol",
+                all_roles,
+                index=all_roles.index(current_sim_role)
+                if current_sim_role in all_roles
+                else 4,
+                key="_sim_role_select",
+            )
+            sim_area_label = st.selectbox(
+                "Simular área",
+                area_labels,
+                key="_sim_area_select",
+            )
+
+        # ── Botones ──
+        col_apply, col_restore = st.columns(2)
+        with col_apply:
+            if st.button("▶ Aplicar", key="_sim_apply", use_container_width=True):
+                # Guardar valores reales la primera vez
+                if "_real_user_role" not in st.session_state:
+                    st.session_state._real_user_role = st.session_state.get(
+                        "current_user_role"
+                    )
+                    st.session_state._real_user_area_id = st.session_state.get(
+                        "current_user_area_id"
+                    )
+                    st.session_state._real_user_id = st.session_state.get(
+                        "current_user_id"
+                    )
+
+                if is_manual:
+                    st.session_state.current_user_role = sim_role
+                    sim_area_id = None
+                    for aid, aname in areas_list:
+                        if aname == sim_area_label:
+                            sim_area_id = aid
+                            break
+                    st.session_state.current_user_area_id = sim_area_id
+                    st.session_state._sim_user_display = f"{sim_role}"
+                else:
+                    idx = user_labels.index(sim_user_label) - 1
+                    target_user = all_users[idx]
+                    st.session_state.current_user_id = target_user["id"]
+                    st.session_state.current_user_role = target_user.get(
+                        "role", "Solicitante"
+                    )
+                    st.session_state.current_user_area_id = target_user.get("area_id")
+                    st.session_state._sim_user_display = (
+                        f"{target_user['username']} ({target_user.get('role', '?')})"
+                    )
+
+                st.session_state._simulating_role = True
+                st.rerun()
+        with col_restore:
+            if st.button("↩ Restaurar", key="_sim_restore", use_container_width=True):
+                if "_real_user_role" in st.session_state:
+                    st.session_state.current_user_role = (
+                        st.session_state._real_user_role
+                    )
+                    st.session_state.current_user_area_id = (
+                        st.session_state._real_user_area_id
+                    )
+                    st.session_state.current_user_id = st.session_state._real_user_id
+                    del st.session_state._real_user_role
+                    del st.session_state._real_user_area_id
+                    del st.session_state._real_user_id
+                if "_sim_user_display" in st.session_state:
+                    del st.session_state._sim_user_display
+                st.session_state._simulating_role = False
+                st.rerun()
+
+        # ── Banner de simulación ──
+        if st.session_state.get("_simulating_role"):
+            display = st.session_state.get("_sim_user_display", "?")
+            st.warning(f"⚠️ Simulando: **{display}**")

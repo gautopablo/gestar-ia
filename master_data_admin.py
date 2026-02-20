@@ -5,7 +5,9 @@ import pyodbc
 import streamlit as st
 
 
-st.set_page_config(page_title="Gestar Admin Maestros", layout="wide")
+# set_page_config solo cuando se ejecuta standalone
+if __name__ == "__main__":
+    st.set_page_config(page_title="Gestar Admin Maestros", layout="wide")
 
 
 def get_secret(name, default=None):
@@ -42,7 +44,9 @@ def is_new_id(value):
     return pd.isna(value) or str(value).strip() == ""
 
 
-def save_simple_table(df_original, df_edited, table, id_col, data_cols, soft_delete_col=None):
+def save_simple_table(
+    df_original, df_edited, table, id_col, data_cols, soft_delete_col=None
+):
     updates = []
     orig_ids = set(df_original[id_col].dropna().astype(int).tolist())
     edited_ids = set()
@@ -56,7 +60,10 @@ def save_simple_table(df_original, df_edited, table, id_col, data_cols, soft_del
             cols_sql = ", ".join(data_cols)
             qmarks = ", ".join(["?"] * len(data_cols))
             updates.append(
-                (f"INSERT INTO {SCHEMA}.{table} ({cols_sql}) VALUES ({qmarks})", tuple(values))
+                (
+                    f"INSERT INTO {SCHEMA}.{table} ({cols_sql}) VALUES ({qmarks})",
+                    tuple(values),
+                )
             )
         else:
             rid_int = int(rid)
@@ -83,7 +90,9 @@ def save_simple_table(df_original, df_edited, table, id_col, data_cols, soft_del
 
 
 def area_editor():
-    divisions = load_df(f"SELECT DivisionId, Nombre FROM {SCHEMA}.Divisiones ORDER BY Nombre")
+    divisions = load_df(
+        f"SELECT DivisionId, Nombre FROM {SCHEMA}.Divisiones ORDER BY Nombre"
+    )
     div_map = {r["Nombre"]: int(r["DivisionId"]) for _, r in divisions.iterrows()}
     div_names = list(div_map.keys())
 
@@ -139,8 +148,10 @@ def area_editor():
                     )
                 )
 
-        for rid in (orig_ids - edited_ids):
-            statements.append((f"UPDATE {SCHEMA}.Areas SET Activo = 0 WHERE AreaId = ?", (rid,)))
+        for rid in orig_ids - edited_ids:
+            statements.append(
+                (f"UPDATE {SCHEMA}.Areas SET Activo = 0 WHERE AreaId = ?", (rid,))
+            )
         execute_many(statements)
         st.success("Areas guardadas.")
         st.rerun()
@@ -167,7 +178,9 @@ def subcategory_editor():
         num_rows="dynamic",
         use_container_width=True,
         column_config={
-            "Categoria": st.column_config.SelectboxColumn("Categoria", options=cat_names),
+            "Categoria": st.column_config.SelectboxColumn(
+                "Categoria", options=cat_names
+            ),
             "Activo": st.column_config.CheckboxColumn("Activo"),
         },
         key="subcats_editor",
@@ -205,9 +218,12 @@ def subcategory_editor():
                     )
                 )
 
-        for rid in (orig_ids - edited_ids):
+        for rid in orig_ids - edited_ids:
             statements.append(
-                (f"UPDATE {SCHEMA}.Subcategorias SET Activo = 0 WHERE SubcategoriaId = ?", (rid,))
+                (
+                    f"UPDATE {SCHEMA}.Subcategorias SET Activo = 0 WHERE SubcategoriaId = ?",
+                    (rid,),
+                )
             )
         execute_many(statements)
         st.success("Subcategorias guardadas.")
@@ -231,7 +247,9 @@ def user_editor():
         df = load_df(
             f"SELECT UserId, Username, Email, Role, Active FROM {SCHEMA}.Users ORDER BY UserId"
         )
-        edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="users")
+        edited = st.data_editor(
+            df, num_rows="dynamic", use_container_width=True, key="users"
+        )
         if st.button("Guardar Users", use_container_width=True):
             save_simple_table(
                 df,
@@ -245,7 +263,9 @@ def user_editor():
             st.rerun()
         return
 
-    areas_df = load_df(f"SELECT AreaId, Nombre FROM {SCHEMA}.Areas WHERE Activo = 1 ORDER BY Nombre")
+    areas_df = load_df(
+        f"SELECT AreaId, Nombre FROM {SCHEMA}.Areas WHERE Activo = 1 ORDER BY Nombre"
+    )
     divs_df = load_df(
         f"SELECT DivisionId, Nombre FROM {SCHEMA}.Divisiones WHERE Activo = 1 ORDER BY Nombre"
     )
@@ -276,14 +296,18 @@ def user_editor():
 
     view_cols = ["UserId", "Username", "Email", "Role", "Active", "Area", "Division"]
     view = df[view_cols].copy()
+    role_options = ["Solicitante", "Analista", "Jefe", "Director", "Administrador"]
     edited = st.data_editor(
         view,
         num_rows="dynamic",
         use_container_width=True,
         column_config={
             "Active": st.column_config.CheckboxColumn("Active"),
+            "Role": st.column_config.SelectboxColumn("Rol", options=role_options),
             "Area": st.column_config.SelectboxColumn("Area", options=area_options),
-            "Division": st.column_config.SelectboxColumn("Division", options=division_options),
+            "Division": st.column_config.SelectboxColumn(
+                "Division", options=division_options
+            ),
         },
         key="users_editor",
     )
@@ -300,7 +324,9 @@ def user_editor():
             role = row.get("Role")
             active = int(bool(row.get("Active", True)))
             area_id = area_name_to_id.get(row.get("Area")) if has_area_id else None
-            division_id = div_name_to_id.get(row.get("Division")) if has_division_id else None
+            division_id = (
+                div_name_to_id.get(row.get("Division")) if has_division_id else None
+            )
 
             if is_new_id(user_id):
                 if not username:
@@ -316,7 +342,10 @@ def user_editor():
                 col_sql = ", ".join(cols)
                 qmarks = ", ".join(["?"] * len(vals))
                 statements.append(
-                    (f"INSERT INTO {SCHEMA}.Users ({col_sql}) VALUES ({qmarks})", tuple(vals))
+                    (
+                        f"INSERT INTO {SCHEMA}.Users ({col_sql}) VALUES ({qmarks})",
+                        tuple(vals),
+                    )
                 )
             else:
                 user_id = int(user_id)
@@ -331,15 +360,133 @@ def user_editor():
                     vals.append(division_id)
                 set_sql = ", ".join(sets)
                 statements.append(
-                    (f"UPDATE {SCHEMA}.Users SET {set_sql} WHERE UserId = ?", tuple(vals + [user_id]))
+                    (
+                        f"UPDATE {SCHEMA}.Users SET {set_sql} WHERE UserId = ?",
+                        tuple(vals + [user_id]),
+                    )
                 )
 
-        for rid in (orig_ids - edited_ids):
-            statements.append((f"UPDATE {SCHEMA}.Users SET Active = 0 WHERE UserId = ?", (rid,)))
+        for rid in orig_ids - edited_ids:
+            statements.append(
+                (f"UPDATE {SCHEMA}.Users SET Active = 0 WHERE UserId = ?", (rid,))
+            )
 
         execute_many(statements)
         st.success("Users guardados.")
         st.rerun()
+
+
+def render_admin_panel():
+    """Renderiza el panel de admin embedible en app.py (sin set_page_config)."""
+    st.subheader("Administrador de Datos Maestros")
+    st.caption(f"Esquema activo: {SCHEMA}")
+
+    try:
+        _ = load_df("SELECT 1 AS ok")
+    except Exception as exc:
+        st.error(f"No se pudo conectar a la base Azure: {exc}")
+        return
+
+    table = st.selectbox(
+        "Tabla maestra",
+        [
+            "Plantas",
+            "Divisiones",
+            "Areas",
+            "Categorias",
+            "Subcategorias",
+            "Prioridades",
+            "Estados",
+            "Users",
+        ],
+        key="admin_table_selector",
+    )
+
+    try:
+        if table == "Plantas":
+            df = load_df(
+                f"SELECT PlantaId, Nombre, Activo FROM {SCHEMA}.Plantas ORDER BY PlantaId"
+            )
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="admin_plantas"
+            )
+            if st.button("Guardar Plantas", use_container_width=True):
+                save_simple_table(
+                    df, edited, "Plantas", "PlantaId", ["Nombre", "Activo"], "Activo"
+                )
+                st.success("Plantas guardadas.")
+                st.rerun()
+        elif table == "Divisiones":
+            df = load_df(
+                f"SELECT DivisionId, Nombre, Activo FROM {SCHEMA}.Divisiones ORDER BY DivisionId"
+            )
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="admin_divisiones"
+            )
+            if st.button("Guardar Divisiones", use_container_width=True):
+                save_simple_table(
+                    df,
+                    edited,
+                    "Divisiones",
+                    "DivisionId",
+                    ["Nombre", "Activo"],
+                    "Activo",
+                )
+                st.success("Divisiones guardadas.")
+                st.rerun()
+        elif table == "Areas":
+            area_editor()
+        elif table == "Categorias":
+            df = load_df(
+                f"SELECT CategoriaId, Nombre, Activo FROM {SCHEMA}.Categorias ORDER BY CategoriaId"
+            )
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="admin_categorias"
+            )
+            if st.button("Guardar Categorias", use_container_width=True):
+                save_simple_table(
+                    df,
+                    edited,
+                    "Categorias",
+                    "CategoriaId",
+                    ["Nombre", "Activo"],
+                    "Activo",
+                )
+                st.success("Categorias guardadas.")
+                st.rerun()
+        elif table == "Subcategorias":
+            subcategory_editor()
+        elif table == "Prioridades":
+            df = load_df(
+                f"SELECT PrioridadId, Nombre, Nivel FROM {SCHEMA}.Prioridades ORDER BY Nivel, PrioridadId"
+            )
+            edited = st.data_editor(
+                df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="admin_prioridades",
+            )
+            if st.button("Guardar Prioridades", use_container_width=True):
+                save_simple_table(
+                    df, edited, "Prioridades", "PrioridadId", ["Nombre", "Nivel"]
+                )
+                st.success("Prioridades guardadas.")
+                st.rerun()
+        elif table == "Estados":
+            df = load_df(
+                f"SELECT EstadoId, Nombre FROM {SCHEMA}.Estados ORDER BY EstadoId"
+            )
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="admin_estados"
+            )
+            if st.button("Guardar Estados", use_container_width=True):
+                save_simple_table(df, edited, "Estados", "EstadoId", ["Nombre"])
+                st.success("Estados guardados.")
+                st.rerun()
+        elif table == "Users":
+            user_editor()
+    except Exception as exc:
+        st.error(f"Error al guardar datos en {table}: {exc}")
 
 
 def main():
@@ -368,10 +515,16 @@ def main():
 
     try:
         if table == "Plantas":
-            df = load_df(f"SELECT PlantaId, Nombre, Activo FROM {SCHEMA}.Plantas ORDER BY PlantaId")
-            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="plantas")
+            df = load_df(
+                f"SELECT PlantaId, Nombre, Activo FROM {SCHEMA}.Plantas ORDER BY PlantaId"
+            )
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="plantas"
+            )
             if st.button("Guardar Plantas", use_container_width=True):
-                save_simple_table(df, edited, "Plantas", "PlantaId", ["Nombre", "Activo"], "Activo")
+                save_simple_table(
+                    df, edited, "Plantas", "PlantaId", ["Nombre", "Activo"], "Activo"
+                )
                 st.success("Plantas guardadas.")
                 st.rerun()
 
@@ -379,10 +532,17 @@ def main():
             df = load_df(
                 f"SELECT DivisionId, Nombre, Activo FROM {SCHEMA}.Divisiones ORDER BY DivisionId"
             )
-            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="divisiones")
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="divisiones"
+            )
             if st.button("Guardar Divisiones", use_container_width=True):
                 save_simple_table(
-                    df, edited, "Divisiones", "DivisionId", ["Nombre", "Activo"], "Activo"
+                    df,
+                    edited,
+                    "Divisiones",
+                    "DivisionId",
+                    ["Nombre", "Activo"],
+                    "Activo",
                 )
                 st.success("Divisiones guardadas.")
                 st.rerun()
@@ -394,10 +554,17 @@ def main():
             df = load_df(
                 f"SELECT CategoriaId, Nombre, Activo FROM {SCHEMA}.Categorias ORDER BY CategoriaId"
             )
-            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="categorias")
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="categorias"
+            )
             if st.button("Guardar Categorias", use_container_width=True):
                 save_simple_table(
-                    df, edited, "Categorias", "CategoriaId", ["Nombre", "Activo"], "Activo"
+                    df,
+                    edited,
+                    "Categorias",
+                    "CategoriaId",
+                    ["Nombre", "Activo"],
+                    "Activo",
                 )
                 st.success("Categorias guardadas.")
                 st.rerun()
@@ -409,15 +576,23 @@ def main():
             df = load_df(
                 f"SELECT PrioridadId, Nombre, Nivel FROM {SCHEMA}.Prioridades ORDER BY Nivel, PrioridadId"
             )
-            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="prioridades")
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="prioridades"
+            )
             if st.button("Guardar Prioridades", use_container_width=True):
-                save_simple_table(df, edited, "Prioridades", "PrioridadId", ["Nombre", "Nivel"])
+                save_simple_table(
+                    df, edited, "Prioridades", "PrioridadId", ["Nombre", "Nivel"]
+                )
                 st.success("Prioridades guardadas.")
                 st.rerun()
 
         elif table == "Estados":
-            df = load_df(f"SELECT EstadoId, Nombre FROM {SCHEMA}.Estados ORDER BY EstadoId")
-            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="estados")
+            df = load_df(
+                f"SELECT EstadoId, Nombre FROM {SCHEMA}.Estados ORDER BY EstadoId"
+            )
+            edited = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, key="estados"
+            )
             if st.button("Guardar Estados", use_container_width=True):
                 save_simple_table(df, edited, "Estados", "EstadoId", ["Nombre"])
                 st.success("Estados guardados.")
