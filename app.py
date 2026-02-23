@@ -86,6 +86,15 @@ def get_base64_image(image_path):
         return ""
 
 
+def get_app_version():
+    try:
+        with open("VERSION", "r", encoding="utf-8") as version_file:
+            version = version_file.read().strip()
+        return version or "dev"
+    except Exception:
+        return "dev"
+
+
 def render_printable_dataframe(df, title, state_key):
     if df is None or df.empty:
         return
@@ -3303,6 +3312,7 @@ def render_form_mode():
 
 session_user = get_session_user(st.session_state.master_data)
 auth_identity = st.session_state.get("auth_identity")
+app_version = get_app_version()
 
 with st.container():
     st.markdown("<div class='dbg-panel-header'></div>", unsafe_allow_html=True)
@@ -3347,6 +3357,7 @@ with st.container():
             else:
                 st.caption("Usuario logueado")
                 st.markdown("No identificado")
+            st.caption(f"Version {app_version}")
         with ux2:
             cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
             st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
