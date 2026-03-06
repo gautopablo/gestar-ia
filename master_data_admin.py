@@ -1,8 +1,8 @@
 import os
 
 import pandas as pd
-import pyodbc
 import streamlit as st
+from db_adapter import DBAdapter
 
 
 # set_page_config solo cuando se ejecuta standalone
@@ -11,20 +11,43 @@ if __name__ == "__main__":
 
 
 def get_secret(name, default=None):
+    value = None
     try:
-        return st.secrets.get(name, default)
+        if name in st.secrets:
+            value = st.secrets.get(name)
     except Exception:
-        return os.getenv(name, default)
+        value = None
+    if value not in (None, ""):
+        return value
+    env_value = os.getenv(name)
+    if env_value not in (None, ""):
+        return env_value
+    return default
 
 
 def get_connection():
+    return get_db_adapter().connect()
+
+
+def get_db_adapter():
+    mode = (get_secret("DB_MODE", "azure") or "azure").strip().lower()
+    schema = get_secret("DB_SCHEMA", "gestar")
+    sqlite_path = get_secret("SQLITE_PATH", "tickets_mvp.db")
     conn_str = get_secret("ODBC_CONN_STR")
-    if not conn_str:
-        raise RuntimeError("Falta ODBC_CONN_STR en secrets o variables de entorno.")
-    return pyodbc.connect(conn_str)
+    return DBAdapter(
+        mode=mode,
+        schema=schema,
+        sqlite_path=sqlite_path,
+        odbc_conn_str=conn_str,
+    )
 
 
-SCHEMA = get_secret("DB_SCHEMA", "gestar")
+def qname(table_name):
+    return get_db_adapter().qname(table_name)
+
+
+def current_backend_label():
+    return "SQLite" if get_db_adapter().is_sqlite else "Azure SQL"
 
 
 def load_df(sql, params=()):
@@ -61,7 +84,7 @@ def save_simple_table(
             qmarks = ", ".join(["?"] * len(data_cols))
             updates.append(
                 (
-                    f"INSERT INTO {SCHEMA}.{table} ({cols_sql}) VALUES ({qmarks})",
+                    f"INSERT INTO {qname(table)} ({cols_sql}) VALUES ({qmarks})",
                     tuple(values),
                 )
             )
@@ -71,7 +94,7 @@ def save_simple_table(
             set_sql = ", ".join([f"{c} = ?" for c in data_cols])
             updates.append(
                 (
-                    f"UPDATE {SCHEMA}.{table} SET {set_sql} WHERE {id_col} = ?",
+                    f"UPDATE {qname(table)} SET {set_sql} WHERE {id_col} = ?",
                     tuple(values + [rid_int]),
                 )
             )
@@ -81,7 +104,7 @@ def save_simple_table(
         for rid in removed_ids:
             updates.append(
                 (
-                    f"UPDATE {SCHEMA}.{table} SET {soft_delete_col} = 0 WHERE {id_col} = ?",
+                    f"UPDATE {qname(table)} SET {soft_delete_col} = 0 WHERE {id_col} = ?",
                     (rid,),
                 )
             )
@@ -91,7 +114,7 @@ def save_simple_table(
 
 def area_editor():
     divisions = load_df(
-        f"SELECT DivisionId, Nombre FROM {SCHEMA}.Divisiones ORDER BY Nombre"
+        f"SELECT DivisionId, Nombre FROM {qname('Divisiones')} ORDER BY Nombre"
     )
     div_map = {r["Nombre"]: int(r["DivisionId"]) for _, r in divisions.iterrows()}
     div_names = list(div_map.keys())
@@ -99,8 +122,8 @@ def area_editor():
     df = load_df(
         f"""
         SELECT a.AreaId, a.Nombre, a.DivisionId, d.Nombre AS Division, a.Activo
-        FROM {SCHEMA}.Areas a
-        LEFT JOIN {SCHEMA}.Divisiones d ON d.DivisionId = a.DivisionId
+        FROM {qname("Areas")} a
+        LEFT JOIN {qname("Divisiones")} d ON d.DivisionId = a.DivisionId
         ORDER BY a.AreaId
         """
     )
@@ -133,7 +156,7 @@ def area_editor():
                     return
                 statements.append(
                     (
-                        f"INSERT INTO {SCHEMA}.Areas (Nombre, DivisionId, Activo) VALUES (?, ?, ?)",
+                        f"INSERT INTO {qname('Areas')} (Nombre, DivisionId, Activo) VALUES (?, ?, ?)",
                         (nombre, div_id, int(activo)),
                     )
                 )
@@ -143,14 +166,14 @@ def area_editor():
                 div_id = div_map.get(division_name) if division_name else None
                 statements.append(
                     (
-                        f"UPDATE {SCHEMA}.Areas SET Nombre = ?, DivisionId = ?, Activo = ? WHERE AreaId = ?",
+                        f"UPDATE {qname('Areas')} SET Nombre = ?, DivisionId = ?, Activo = ? WHERE AreaId = ?",
                         (nombre, div_id, int(activo), area_id),
                     )
                 )
 
         for rid in orig_ids - edited_ids:
             statements.append(
-                (f"UPDATE {SCHEMA}.Areas SET Activo = 0 WHERE AreaId = ?", (rid,))
+                (f"UPDATE {qname('Areas')} SET Activo = 0 WHERE AreaId = ?", (rid,))
             )
         execute_many(statements)
         st.success("Areas guardadas.")
@@ -159,7 +182,7 @@ def area_editor():
 
 def subcategory_editor():
     categorias = load_df(
-        f"SELECT CategoriaId, Nombre FROM {SCHEMA}.Categorias ORDER BY Nombre"
+        f"SELECT CategoriaId, Nombre FROM {qname('Categorias')} ORDER BY Nombre"
     )
     cat_map = {r["Nombre"]: int(r["CategoriaId"]) for _, r in categorias.iterrows()}
     cat_names = list(cat_map.keys())
@@ -167,8 +190,8 @@ def subcategory_editor():
     df = load_df(
         f"""
         SELECT s.SubcategoriaId, s.Nombre, s.CategoriaId, c.Nombre AS Categoria, s.Activo
-        FROM {SCHEMA}.Subcategorias s
-        JOIN {SCHEMA}.Categorias c ON c.CategoriaId = s.CategoriaId
+        FROM {qname("Subcategorias")} s
+        JOIN {qname("Categorias")} c ON c.CategoriaId = s.CategoriaId
         ORDER BY s.SubcategoriaId
         """
     )
@@ -203,7 +226,7 @@ def subcategory_editor():
                     return
                 statements.append(
                     (
-                        f"INSERT INTO {SCHEMA}.Subcategorias (Nombre, CategoriaId, Activo) VALUES (?, ?, ?)",
+                        f"INSERT INTO {qname('Subcategorias')} (Nombre, CategoriaId, Activo) VALUES (?, ?, ?)",
                         (nombre, cat_id, int(activo)),
                     )
                 )
@@ -213,7 +236,7 @@ def subcategory_editor():
                 cat_id = cat_map.get(categoria_name) if categoria_name else None
                 statements.append(
                     (
-                        f"UPDATE {SCHEMA}.Subcategorias SET Nombre = ?, CategoriaId = ?, Activo = ? WHERE SubcategoriaId = ?",
+                        f"UPDATE {qname('Subcategorias')} SET Nombre = ?, CategoriaId = ?, Activo = ? WHERE SubcategoriaId = ?",
                         (nombre, cat_id, int(activo), sub_id),
                     )
                 )
@@ -221,7 +244,7 @@ def subcategory_editor():
         for rid in orig_ids - edited_ids:
             statements.append(
                 (
-                    f"UPDATE {SCHEMA}.Subcategorias SET Activo = 0 WHERE SubcategoriaId = ?",
+                    f"UPDATE {qname('Subcategorias')} SET Activo = 0 WHERE SubcategoriaId = ?",
                     (rid,),
                 )
             )
@@ -232,20 +255,15 @@ def subcategory_editor():
 
 def user_editor():
     # Detectar si existen columnas relacionales en Users
-    cols_df = load_df(
-        f"""
-        SELECT LOWER(COLUMN_NAME) AS col
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '{SCHEMA}' AND TABLE_NAME = 'Users'
-        """
-    )
-    user_cols = set(cols_df["col"].tolist())
+    adapter = get_db_adapter()
+    with get_connection() as conn:
+        user_cols = set(adapter.list_columns(conn, "Users"))
     has_area_id = "areaid" in user_cols
     has_division_id = "divisionid" in user_cols
 
     if not has_area_id and not has_division_id:
         df = load_df(
-            f"SELECT UserId, Username, Email, Role, Active FROM {SCHEMA}.Users ORDER BY UserId"
+            f"SELECT UserId, Username, Email, Role, Active FROM {qname('Users')} ORDER BY UserId"
         )
         edited = st.data_editor(
             df, num_rows="dynamic", use_container_width=True, key="users"
@@ -264,10 +282,10 @@ def user_editor():
         return
 
     areas_df = load_df(
-        f"SELECT AreaId, Nombre FROM {SCHEMA}.Areas WHERE Activo = 1 ORDER BY Nombre"
+        f"SELECT AreaId, Nombre FROM {qname('Areas')} WHERE Activo = 1 ORDER BY Nombre"
     )
     divs_df = load_df(
-        f"SELECT DivisionId, Nombre FROM {SCHEMA}.Divisiones WHERE Activo = 1 ORDER BY Nombre"
+        f"SELECT DivisionId, Nombre FROM {qname('Divisiones')} WHERE Activo = 1 ORDER BY Nombre"
     )
     area_name_to_id = {r["Nombre"]: int(r["AreaId"]) for _, r in areas_df.iterrows()}
     div_name_to_id = {r["Nombre"]: int(r["DivisionId"]) for _, r in divs_df.iterrows()}
@@ -287,9 +305,9 @@ def user_editor():
             {select_div_id},
             {select_area_name},
             {select_div_name}
-        FROM {SCHEMA}.Users u
-        LEFT JOIN {SCHEMA}.Areas a ON {"u.AreaId = a.AreaId" if has_area_id else "1=0"}
-        LEFT JOIN {SCHEMA}.Divisiones d ON {"u.DivisionId = d.DivisionId" if has_division_id else "1=0"}
+        FROM {qname("Users")} u
+        LEFT JOIN {qname("Areas")} a ON {"u.AreaId = a.AreaId" if has_area_id else "1=0"}
+        LEFT JOIN {qname("Divisiones")} d ON {"u.DivisionId = d.DivisionId" if has_division_id else "1=0"}
         ORDER BY u.UserId
         """
     )
@@ -343,7 +361,7 @@ def user_editor():
                 qmarks = ", ".join(["?"] * len(vals))
                 statements.append(
                     (
-                        f"INSERT INTO {SCHEMA}.Users ({col_sql}) VALUES ({qmarks})",
+                        f"INSERT INTO {qname('Users')} ({col_sql}) VALUES ({qmarks})",
                         tuple(vals),
                     )
                 )
@@ -361,14 +379,14 @@ def user_editor():
                 set_sql = ", ".join(sets)
                 statements.append(
                     (
-                        f"UPDATE {SCHEMA}.Users SET {set_sql} WHERE UserId = ?",
+                        f"UPDATE {qname('Users')} SET {set_sql} WHERE UserId = ?",
                         tuple(vals + [user_id]),
                     )
                 )
 
         for rid in orig_ids - edited_ids:
             statements.append(
-                (f"UPDATE {SCHEMA}.Users SET Active = 0 WHERE UserId = ?", (rid,))
+                (f"UPDATE {qname('Users')} SET Active = 0 WHERE UserId = ?", (rid,))
             )
 
         execute_many(statements)
@@ -379,12 +397,12 @@ def user_editor():
 def render_admin_panel():
     """Renderiza el panel de admin embedible en app.py (sin set_page_config)."""
     st.subheader("Administrador de Datos Maestros")
-    st.caption(f"Esquema activo: {SCHEMA}")
+    st.caption(f"Backend activo: {current_backend_label()}")
 
     try:
         _ = load_df("SELECT 1 AS ok")
     except Exception as exc:
-        st.error(f"No se pudo conectar a la base Azure: {exc}")
+        st.error(f"No se pudo conectar a la base: {exc}")
         return
 
     table = st.selectbox(
@@ -405,7 +423,7 @@ def render_admin_panel():
     try:
         if table == "Plantas":
             df = load_df(
-                f"SELECT PlantaId, Nombre, Activo FROM {SCHEMA}.Plantas ORDER BY PlantaId"
+                f"SELECT PlantaId, Nombre, Activo FROM {qname('Plantas')} ORDER BY PlantaId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="admin_plantas"
@@ -418,7 +436,7 @@ def render_admin_panel():
                 st.rerun()
         elif table == "Divisiones":
             df = load_df(
-                f"SELECT DivisionId, Nombre, Activo FROM {SCHEMA}.Divisiones ORDER BY DivisionId"
+                f"SELECT DivisionId, Nombre, Activo FROM {qname('Divisiones')} ORDER BY DivisionId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="admin_divisiones"
@@ -438,7 +456,7 @@ def render_admin_panel():
             area_editor()
         elif table == "Categorias":
             df = load_df(
-                f"SELECT CategoriaId, Nombre, Activo FROM {SCHEMA}.Categorias ORDER BY CategoriaId"
+                f"SELECT CategoriaId, Nombre, Activo FROM {qname('Categorias')} ORDER BY CategoriaId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="admin_categorias"
@@ -458,7 +476,7 @@ def render_admin_panel():
             subcategory_editor()
         elif table == "Prioridades":
             df = load_df(
-                f"SELECT PrioridadId, Nombre, Nivel FROM {SCHEMA}.Prioridades ORDER BY Nivel, PrioridadId"
+                f"SELECT PrioridadId, Nombre, Nivel FROM {qname('Prioridades')} ORDER BY Nivel, PrioridadId"
             )
             edited = st.data_editor(
                 df,
@@ -474,7 +492,7 @@ def render_admin_panel():
                 st.rerun()
         elif table == "Estados":
             df = load_df(
-                f"SELECT EstadoId, Nombre FROM {SCHEMA}.Estados ORDER BY EstadoId"
+                f"SELECT EstadoId, Nombre FROM {qname('Estados')} ORDER BY EstadoId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="admin_estados"
@@ -490,13 +508,13 @@ def render_admin_panel():
 
 
 def main():
-    st.title("Administrador de Datos Maestros (Azure)")
-    st.caption(f"Esquema activo: {SCHEMA}")
+    st.title("Administrador de Datos Maestros")
+    st.caption(f"Backend activo: {current_backend_label()}")
 
     try:
         _ = load_df("SELECT 1 AS ok")
     except Exception as exc:
-        st.error(f"No se pudo conectar a la base Azure: {exc}")
+        st.error(f"No se pudo conectar a la base: {exc}")
         st.stop()
 
     table = st.selectbox(
@@ -516,7 +534,7 @@ def main():
     try:
         if table == "Plantas":
             df = load_df(
-                f"SELECT PlantaId, Nombre, Activo FROM {SCHEMA}.Plantas ORDER BY PlantaId"
+                f"SELECT PlantaId, Nombre, Activo FROM {qname('Plantas')} ORDER BY PlantaId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="plantas"
@@ -530,7 +548,7 @@ def main():
 
         elif table == "Divisiones":
             df = load_df(
-                f"SELECT DivisionId, Nombre, Activo FROM {SCHEMA}.Divisiones ORDER BY DivisionId"
+                f"SELECT DivisionId, Nombre, Activo FROM {qname('Divisiones')} ORDER BY DivisionId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="divisiones"
@@ -552,7 +570,7 @@ def main():
 
         elif table == "Categorias":
             df = load_df(
-                f"SELECT CategoriaId, Nombre, Activo FROM {SCHEMA}.Categorias ORDER BY CategoriaId"
+                f"SELECT CategoriaId, Nombre, Activo FROM {qname('Categorias')} ORDER BY CategoriaId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="categorias"
@@ -574,7 +592,7 @@ def main():
 
         elif table == "Prioridades":
             df = load_df(
-                f"SELECT PrioridadId, Nombre, Nivel FROM {SCHEMA}.Prioridades ORDER BY Nivel, PrioridadId"
+                f"SELECT PrioridadId, Nombre, Nivel FROM {qname('Prioridades')} ORDER BY Nivel, PrioridadId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="prioridades"
@@ -588,7 +606,7 @@ def main():
 
         elif table == "Estados":
             df = load_df(
-                f"SELECT EstadoId, Nombre FROM {SCHEMA}.Estados ORDER BY EstadoId"
+                f"SELECT EstadoId, Nombre FROM {qname('Estados')} ORDER BY EstadoId"
             )
             edited = st.data_editor(
                 df, num_rows="dynamic", use_container_width=True, key="estados"

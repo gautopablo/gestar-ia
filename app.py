@@ -16,11 +16,7 @@ from notification_assignment import (
     start_assignment_notification_worker_once,
 )
 from master_data_admin import render_admin_panel
-
-try:
-    import pyodbc
-except ImportError:
-    pyodbc = None
+from db_adapter import DBAdapter
 
 # Cargar variables de entorno
 load_dotenv()
@@ -40,21 +36,26 @@ def normalize_text(value):
 
 
 def get_secret(name, default=None):
+    value = None
     try:
-        value = st.secrets.get(name, default)
+        if name in st.secrets:
+            value = st.secrets.get(name)
     except Exception:
-        value = default
+        value = None
     if value not in (None, ""):
         return value
-    return os.getenv(name, default)
+
+    env_value = os.getenv(name)
+    if env_value not in (None, ""):
+        return env_value
+    return default
 
 
 def get_azure_master_connection():
-    conn_str = get_secret("ODBC_CONN_STR")
-    if not conn_str:
-        raise RuntimeError("Falta ODBC_CONN_STR en Streamlit Secrets o .env")
-    if pyodbc is None:
-        raise RuntimeError("pyodbc no está instalado")
+    adapter = get_db_adapter()
+    if adapter.is_sqlite:
+        return adapter.connect()
+
     attempts = 3
     backoff_seconds = [0, 2, 5]
     last_error = None
@@ -62,7 +63,7 @@ def get_azure_master_connection():
         if backoff_seconds[i] > 0:
             time.sleep(backoff_seconds[i])
         try:
-            return pyodbc.connect(conn_str)
+            return adapter.connect()
         except Exception as e:
             last_error = e
     raise RuntimeError(
@@ -70,12 +71,42 @@ def get_azure_master_connection():
     )
 
 
+def get_db_adapter():
+    mode = (get_secret("DB_MODE", "azure") or "azure").strip().lower()
+    schema = get_secret("DB_SCHEMA", "gestar")
+    sqlite_path = get_secret("SQLITE_PATH", "tickets_mvp.db")
+    conn_str = get_secret("ODBC_CONN_STR")
+    return DBAdapter(
+        mode=mode,
+        schema=schema,
+        sqlite_path=sqlite_path,
+        odbc_conn_str=conn_str,
+    )
+
+
+def is_sqlite_mode():
+    return get_db_adapter().is_sqlite
+
+
+def get_db_mode_label():
+    return "SQLite" if is_sqlite_mode() else "Azure SQL"
+
+
+def get_db_mode_message():
+    adapter = get_db_adapter()
+    if adapter.is_sqlite:
+        return f"Base de datos: SQLite (`{adapter.sqlite_path}`)"
+    schema = adapter.schema or "dbo"
+    return f"Base de datos: Azure SQL (schema `{schema}`)"
+
+
 def get_master_schema():
-    return get_secret("DB_SCHEMA", "gestar")
+    adapter = get_db_adapter()
+    return "" if adapter.is_sqlite else adapter.schema
 
 
 def qname(table_name):
-    return f"{get_master_schema()}.{table_name}"
+    return get_db_adapter().qname(table_name)
 
 
 def get_base64_image(image_path):
@@ -93,6 +124,41 @@ def get_app_version():
         return version or "dev"
     except Exception:
         return "dev"
+
+
+def _read_sql_statements(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return [chunk.strip() for chunk in content.split(";") if chunk.strip()]
+
+
+def ensure_sqlite_schema():
+    adapter = get_db_adapter()
+    if not adapter.is_sqlite:
+        return
+
+    conn = adapter.connect()
+    try:
+        schema_path = get_secret("SQLITE_SCHEMA_PATH", "schema_sqlite.sql")
+        seed_path = get_secret("SQLITE_SEED_PATH", "seed_sqlite.sql")
+
+        # Ejecutar siempre el schema idempotente para crear tablas/índices faltantes.
+        for stmt in _read_sql_statements(schema_path):
+            conn.execute(stmt)
+
+        # Migración liviana para bases SQLite legacy sin columnas nuevas en Users.
+        user_cols = set(adapter.list_columns(conn, "Users"))
+        if "areaid" not in user_cols:
+            conn.execute(f"ALTER TABLE {qname('Users')} ADD COLUMN AreaId INTEGER")
+        if "divisionid" not in user_cols:
+            conn.execute(f"ALTER TABLE {qname('Users')} ADD COLUMN DivisionId INTEGER")
+
+        if os.path.exists(seed_path):
+            for stmt in _read_sql_statements(seed_path):
+                conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def render_printable_dataframe(df, title, state_key):
@@ -318,12 +384,19 @@ def _build_username_base(email_value, principal_name):
 
 def _next_available_username(cursor, base_username):
     base = base_username[:80] or "solicitante"
+    adapter = get_db_adapter()
     for i in range(1, 500):
         candidate = base if i == 1 else f"{base}_{i}"
-        cursor.execute(
-            f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE Username = ?",
-            (candidate,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"SELECT UserId FROM {qname('Users')} WHERE Username = ? LIMIT 1",
+                (candidate,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 UserId FROM {qname('Users')} WHERE Username = ?",
+                (candidate,),
+            )
         if not cursor.fetchone():
             return candidate
     raise RuntimeError("No se pudo generar un username disponible para auto-alta.")
@@ -335,16 +408,28 @@ def create_solicitante_user(email_value, principal_name):
         raise RuntimeError("No se pudo auto-crear usuario: email vacío.")
 
     conn = get_azure_master_connection()
+    adapter = get_db_adapter()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT TOP 1 UserId, Username, Email, Role, AreaId, DivisionId
-            FROM {qname("Users")}
-            WHERE LOWER(Email) = LOWER(?)
-            """,
-            (email_clean,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"""
+                SELECT UserId, Username, Email, Role, AreaId, DivisionId
+                FROM {qname("Users")}
+                WHERE LOWER(Email) = LOWER(?)
+                LIMIT 1
+                """,
+                (email_clean,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT TOP 1 UserId, Username, Email, Role, AreaId, DivisionId
+                FROM {qname("Users")}
+                WHERE LOWER(Email) = LOWER(?)
+                """,
+                (email_clean,),
+            )
         row = cursor.fetchone()
         if row:
             return {
@@ -362,12 +447,16 @@ def create_solicitante_user(email_value, principal_name):
         cursor.execute(
             f"""
             INSERT INTO {qname("Users")} (Username, Email, Role, Active)
-            OUTPUT INSERTED.UserId
             VALUES (?, ?, ?, 1)
             """,
             (username, email_clean, "Solicitante"),
         )
-        new_id = cursor.fetchone()[0]
+        if adapter.is_sqlite:
+            new_id = cursor.lastrowid
+        else:
+            cursor.execute("SELECT CAST(SCOPE_IDENTITY() AS INT)")
+            new_row = cursor.fetchone()
+            new_id = new_row[0] if new_row else None
         conn.commit()
         return {
             "id": new_id,
@@ -379,6 +468,71 @@ def create_solicitante_user(email_value, principal_name):
         }
     finally:
         conn.close()
+
+
+def ensure_local_default_admin_user(master_data):
+    if not is_sqlite_mode():
+        return None
+
+    preferred_email_norm = normalize_text("gautop@taranto.com.ar")
+    preferred_usernames = {
+        "gauto_pablo",
+        "pablo_gauto",
+        "pablo.gauto",
+        "pablo gauto",
+    }
+
+    def _is_preferred(user):
+        email_norm = normalize_text(user.get("email"))
+        user_norm = normalize_text(user.get("username"))
+        return (email_norm == preferred_email_norm) or (user_norm in preferred_usernames)
+
+    users = master_data.setdefault("usuarios", [])
+    preferred = next((u for u in users if _is_preferred(u)), None)
+
+    conn = get_azure_master_connection()
+    adapter = get_db_adapter()
+    try:
+        cursor = conn.cursor()
+        if preferred:
+            if normalize_text(preferred.get("role")) != normalize_text("Administrador"):
+                cursor.execute(
+                    f"UPDATE {qname('Users')} SET Role = ? WHERE UserId = ?",
+                    ("Administrador", preferred["id"]),
+                )
+                conn.commit()
+                preferred["role"] = "Administrador"
+            return preferred
+
+        cursor.execute(
+            f"""
+            INSERT INTO {qname("Users")} (Username, Email, Role, Active)
+            VALUES (?, ?, ?, 1)
+            """,
+            ("gauto_pablo", "gautop@taranto.com.ar", "Administrador"),
+        )
+        if adapter.is_sqlite:
+            new_id = cursor.lastrowid
+        else:
+            cursor.execute("SELECT CAST(SCOPE_IDENTITY() AS INT)")
+            row = cursor.fetchone()
+            new_id = row[0] if row else None
+        conn.commit()
+    finally:
+        conn.close()
+
+    created_user = {
+        "id": new_id,
+        "username": "gauto_pablo",
+        "email": "gautop@taranto.com.ar",
+        "role": "Administrador",
+        "area_id": None,
+        "division_id": None,
+    }
+    users.append(created_user)
+    if "master_indexes" in st.session_state:
+        st.session_state.master_indexes = build_master_indexes(master_data)
+    return created_user
 
 
 def ensure_session_user(master_data):
@@ -412,13 +566,17 @@ def ensure_session_user(master_data):
 
     st.session_state.auth_user_mapped = False
     st.session_state.auth_user_autocreated = False
+    preferred_local_user = ensure_local_default_admin_user(master_data)
     users = master_data.get("usuarios", [])
     if not users:
         raise RuntimeError("No hay usuarios activos en la base para iniciar sesión.")
     users_by_id = get_users_by_id(master_data)
     current_id = st.session_state.get("current_user_id")
     if current_id not in users_by_id:
-        st.session_state.current_user_id = users[0]["id"]
+        if preferred_local_user and preferred_local_user.get("id") is not None:
+            st.session_state.current_user_id = preferred_local_user["id"]
+        else:
+            st.session_state.current_user_id = users[0]["id"]
     # Cargar rol y área del usuario activo (solo si NO hay simulación activa)
     if not st.session_state.get("_simulating_role"):
         active_user = users_by_id.get(st.session_state.current_user_id)
@@ -431,6 +589,44 @@ def get_session_user(master_data):
     users_by_id = get_users_by_id(master_data)
     current_id = st.session_state.get("current_user_id")
     return users_by_id.get(current_id)
+
+
+def is_pablo_gauto_user(session_user, auth_identity=None):
+    auth_identity = auth_identity or {}
+    username = normalize_text((session_user or {}).get("username"))
+    email = normalize_text((session_user or {}).get("email"))
+    auth_email = normalize_text(auth_identity.get("email"))
+    auth_principal = normalize_text(auth_identity.get("principal_name"))
+
+    allowed_usernames = {
+        "gauto_pablo",
+        "pablo_gauto",
+        "pablo.gauto",
+        "pablo gauto",
+        "gauto pablo",
+    }
+    allowed_localparts = {
+        "gautop",
+        "gauto_pablo",
+        "pablo.gauto",
+        "pablo_gauto",
+    }
+    allowed_emails = {"gautop@taranto.com.ar"}
+
+    def _email_local_part(v):
+        if "@" not in v:
+            return ""
+        return v.split("@", 1)[0]
+
+    checks = [username, email, auth_email, auth_principal]
+    for value in checks:
+        if not value:
+            continue
+        if value in allowed_usernames or value in allowed_emails:
+            return True
+        if value.endswith("@taranto.com.ar") and _email_local_part(value) in allowed_localparts:
+            return True
+    return False
 
 
 def safe_parse_datetime(value):
@@ -556,19 +752,10 @@ def extract_suggested_user_from_text(value):
 
 def load_user_area_division_map():
     conn = get_azure_master_connection()
+    adapter = get_db_adapter()
     try:
         cursor = conn.cursor()
-        schema = get_master_schema()
-
-        col_rows = cursor.execute(
-            """
-            SELECT LOWER(COLUMN_NAME)
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'Users'
-            """,
-            (schema,),
-        ).fetchall()
-        user_cols = {row[0] for row in col_rows}
+        user_cols = set(adapter.list_columns(conn, "Users"))
         if "username" not in user_cols:
             return {}
 
@@ -947,19 +1134,25 @@ def compute_completeness_score(draft, ids):
 
 
 def init_db():
-    # La app usa Azure SQL de forma obligatoria.
     # Validamos conexión y existencia de tablas clave al arrancar.
+    adapter = get_db_adapter()
+    ensure_sqlite_schema()
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT TOP 1 UserId FROM {qname('Users')}")
-        cursor.execute(f"SELECT TOP 1 TicketId FROM {qname('Tickets')}")
+        if adapter.is_sqlite:
+            cursor.execute(f"SELECT UserId FROM {qname('Users')} LIMIT 1")
+            cursor.execute(f"SELECT TicketId FROM {qname('Tickets')} LIMIT 1")
+        else:
+            cursor.execute(f"SELECT TOP 1 UserId FROM {qname('Users')}")
+            cursor.execute(f"SELECT TOP 1 TicketId FROM {qname('Tickets')}")
     finally:
         conn.close()
 
 
 def insert_ticket_record(draft, ids, metadata):
     conn = get_azure_master_connection()
+    adapter = get_db_adapter()
     try:
         cursor = conn.cursor()
         requester_id = metadata.get("requester_id")
@@ -968,34 +1161,40 @@ def insert_ticket_record(draft, ids, metadata):
                 "No hay usuario de sesión para registrar el solicitante del ticket."
             )
 
+        payload = (
+            draft.get("titulo") or "Ticket sin titulo",
+            draft.get("descripcion") or "Sin descripcion detallada",
+            requester_id,
+            ids.get("suggested_assignee_id"),
+            metadata.get("assignee_id"),
+            ids.get("planta_id"),
+            ids.get("area_id"),
+            ids.get("categoria_id"),
+            ids.get("subcategoria_id"),
+            ids.get("prioridad_id"),
+            ids.get("estado_id"),
+            metadata.get("confidence_score", 0.8),
+            metadata.get("original_prompt"),
+            int(metadata.get("ai_processing_time", 0)),
+            metadata.get("conversation_id"),
+            draft.get("fecha_necesidad_resuelta"),
+        )
         cursor.execute(
             f"""
             INSERT INTO {qname("Tickets")} (
                 Title, Description, RequesterId, SuggestedAssigneeId, AssigneeId,
                 PlantaId, AreaId, CategoriaId, SubcategoriaId, PrioridadId, EstadoId,
                 ConfidenceScore, OriginalPrompt, AiProcessingTime, ConversationId, NeedByAt
-            ) OUTPUT INSERTED.TicketId VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                draft.get("titulo") or "Ticket sin titulo",
-                draft.get("descripcion") or "Sin descripcion detallada",
-                requester_id,
-                ids.get("suggested_assignee_id"),
-                metadata.get("assignee_id"),
-                ids.get("planta_id"),
-                ids.get("area_id"),
-                ids.get("categoria_id"),
-                ids.get("subcategoria_id"),
-                ids.get("prioridad_id"),
-                ids.get("estado_id"),
-                metadata.get("confidence_score", 0.8),
-                metadata.get("original_prompt"),
-                int(metadata.get("ai_processing_time", 0)),
-                metadata.get("conversation_id"),
-                draft.get("fecha_necesidad_resuelta"),
-            ),
+            payload,
         )
-        row = cursor.fetchone()
+        if adapter.is_sqlite:
+            new_id = cursor.lastrowid
+            row = (new_id,) if new_id is not None else None
+        else:
+            cursor.execute("SELECT CAST(SCOPE_IDENTITY() AS INT)")
+            row = cursor.fetchone()
         conn.commit()
         return row[0] if row else None
     finally:
@@ -1004,10 +1203,16 @@ def insert_ticket_record(draft, ids, metadata):
 
 def fetch_tickets_for_form(filters, limit=None):
     conn = get_azure_master_connection()
+    adapter = get_db_adapter()
     try:
         where = []
         params = []
         archived_status_name = "archivado"
+        estado_norm_expr = (
+            "IFNULL(LOWER(TRIM(e.Nombre)), '')"
+            if adapter.is_sqlite
+            else "ISNULL(LOWER(LTRIM(RTRIM(e.Nombre))), '')"
+        )
 
         # ── Filtros de visibilidad por rol ──
         user_role = st.session_state.get("current_user_role", "Solicitante")
@@ -1053,15 +1258,24 @@ def fetch_tickets_for_form(filters, limit=None):
         if not filters.get("include_archived", False) or user_role != "Administrador":
             if user_role != "Administrador":
                 # Nunca mostrar Archivado a no-admin
-                where.append("ISNULL(LOWER(LTRIM(RTRIM(e.Nombre))), '') <> ?")
+                where.append(f"{estado_norm_expr} <> ?")
                 params.append(archived_status_name)
             elif not filters.get("include_archived", False):
                 # Admin sin filtro explícito: también excluir por defecto
-                where.append("ISNULL(LOWER(LTRIM(RTRIM(e.Nombre))), '') <> ?")
+                where.append(f"{estado_norm_expr} <> ?")
                 params.append(archived_status_name)
 
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        top_clause = f"TOP {int(limit)}" if limit else ""
+        if limit:
+            if adapter.is_sqlite:
+                top_clause = ""
+                limit_clause = f"LIMIT {int(limit)}"
+            else:
+                top_clause = f"TOP {int(limit)}"
+                limit_clause = ""
+        else:
+            top_clause = ""
+            limit_clause = ""
         sql = f"""
             SELECT
                 {top_clause}
@@ -1093,6 +1307,7 @@ def fetch_tickets_for_form(filters, limit=None):
             LEFT JOIN {qname("Users")} usug ON t.SuggestedAssigneeId = usug.UserId
             {where_sql}
             ORDER BY t.TicketId DESC
+            {limit_clause}
         """
         cursor = conn.cursor()
         cursor.execute(sql, params)
@@ -1130,6 +1345,8 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
     if not updates:
         return
 
+    adapter = get_db_adapter()
+
     def _normalize_cmp(v):
         if isinstance(v, datetime):
             return v.replace(microsecond=0).isoformat(sep=" ")
@@ -1154,20 +1371,32 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
             return _normalize_cmp(raw_value)
 
         table, pk_col, label_col = lookup_map[field_name]
-        cursor.execute(
-            f"SELECT TOP 1 {label_col} FROM {qname(table)} WHERE {pk_col} = ?",
-            (raw_value,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"SELECT {label_col} FROM {qname(table)} WHERE {pk_col} = ? LIMIT 1",
+                (raw_value,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 {label_col} FROM {qname(table)} WHERE {pk_col} = ?",
+                (raw_value,),
+            )
         row = cursor.fetchone()
         return row[0] if row else _normalize_cmp(raw_value)
 
     def _lookup_username(cursor, user_id):
         if user_id is None:
             return "Sistema"
-        cursor.execute(
-            f"SELECT TOP 1 Username FROM {qname('Users')} WHERE UserId = ?",
-            (user_id,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"SELECT Username FROM {qname('Users')} WHERE UserId = ? LIMIT 1",
+                (user_id,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 Username FROM {qname('Users')} WHERE UserId = ?",
+                (user_id,),
+            )
         row = cursor.fetchone()
         return row[0] if row and row[0] else "Sistema"
 
@@ -1217,16 +1446,22 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
         for field_name, _old, new_value in changed_items:
             set_parts.append(f"{field_name} = ?")
             params.append(new_value)
-        set_parts.append("UpdatedAt = GETDATE()")
+        set_parts.append(f"UpdatedAt = {adapter.now_expr()}")
         params.append(ticket_id)
         cursor.execute(
             f"UPDATE {qname('Tickets')} SET {', '.join(set_parts)} WHERE TicketId = ?",
             params,
         )
-        cursor.execute(
-            f"SELECT TOP 1 UpdatedAt FROM {qname('Tickets')} WHERE TicketId = ?",
-            (ticket_id,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"SELECT UpdatedAt FROM {qname('Tickets')} WHERE TicketId = ? LIMIT 1",
+                (ticket_id,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 UpdatedAt FROM {qname('Tickets')} WHERE TicketId = ?",
+                (ticket_id,),
+            )
         updated_at_row = cursor.fetchone()
         ticket_updated_at = updated_at_row[0] if updated_at_row else None
 
@@ -1333,38 +1568,35 @@ def update_ticket_from_form(ticket_id, updates, actor_user_id):
 
 
 def get_ticket_log_backend():
-    schema = get_master_schema()
+    adapter = get_db_adapter()
     conn = get_azure_master_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT TABLE_SCHEMA, TABLE_NAME
-            FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'TicketLogs'
-            """,
-            (schema,),
-        )
-        row = cursor.fetchone()
-        if not row:
+        if not adapter.table_exists(conn, "TicketLogs"):
+            prefix = f"{adapter.schema}." if adapter.schema else ""
             raise RuntimeError(
-                f"No existe {schema}.TicketLogs. La app no usa tablas legacy de dbo."
+                f"No existe {prefix}TicketLogs. Ejecuta primero el bootstrap del esquema."
             )
-        table_schema, table_name = row[0], row[1]
-        return {"mode": "normalized", "table": f"{table_schema}.{table_name}"}
+        return {"mode": "normalized", "table": qname("TicketLogs")}
     finally:
         conn.close()
 
 
 def fetch_ticket_comments(ticket_id):
     backend = get_ticket_log_backend()
+    adapter = get_db_adapter()
 
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
+        if adapter.is_sqlite:
+            limit_clause = "LIMIT 100"
+            top_clause = ""
+        else:
+            limit_clause = ""
+            top_clause = "TOP 100"
         cursor.execute(
             f"""
-            SELECT TOP 100
+            SELECT {top_clause}
                 l.ChangedAt AS FechaHora,
                 COALESCE(u.Username, 'Sistema') AS Usuario,
                 l.FieldName AS Campo,
@@ -1374,6 +1606,7 @@ def fetch_ticket_comments(ticket_id):
             LEFT JOIN {qname("Users")} u ON l.UserId = u.UserId
             WHERE TicketId = ?
             ORDER BY l.ChangedAt DESC
+            {limit_clause}
             """,
             (ticket_id,),
         )
@@ -1421,22 +1654,35 @@ def _log_ticket_change(
 
 
 def _subtask_lookup_display_value(cursor, field_name, raw_value):
+    adapter = get_db_adapter()
     if raw_value is None:
         return None
     if field_name in ("NeedByAt", "CompletedAt") and isinstance(raw_value, datetime):
         return raw_value.replace(microsecond=0).isoformat(sep=" ")
     if field_name == "AssigneeId":
-        cursor.execute(
-            f"SELECT TOP 1 Username FROM {qname('Users')} WHERE UserId = ?",
-            (raw_value,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"SELECT Username FROM {qname('Users')} WHERE UserId = ? LIMIT 1",
+                (raw_value,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 Username FROM {qname('Users')} WHERE UserId = ?",
+                (raw_value,),
+            )
         row = cursor.fetchone()
         return row[0] if row else str(raw_value)
     if field_name == "EstadoId":
-        cursor.execute(
-            f"SELECT TOP 1 Nombre FROM {qname('Estados')} WHERE EstadoId = ?",
-            (raw_value,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"SELECT Nombre FROM {qname('Estados')} WHERE EstadoId = ? LIMIT 1",
+                (raw_value,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 Nombre FROM {qname('Estados')} WHERE EstadoId = ?",
+                (raw_value,),
+            )
         row = cursor.fetchone()
         return row[0] if row else str(raw_value)
     return str(raw_value)
@@ -1458,25 +1704,15 @@ def _subtask_compact_repr(cursor, row_dict):
 
 
 def get_subtasks_backend():
-    schema = get_master_schema()
+    adapter = get_db_adapter()
     conn = get_azure_master_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT TABLE_SCHEMA, TABLE_NAME
-            FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'Subtasks'
-            """,
-            (schema,),
-        )
-        row = cursor.fetchone()
-        if not row:
+        if not adapter.table_exists(conn, "Subtasks"):
+            prefix = f"{adapter.schema}." if adapter.schema else ""
             raise RuntimeError(
-                f"No existe {schema}.Subtasks. Ejecuta primero la Fase 0."
+                f"No existe {prefix}Subtasks. Ejecuta primero la inicialización de esquema."
             )
-        table_schema, table_name = row[0], row[1]
-        return {"table": f"{table_schema}.{table_name}"}
+        return {"table": qname("Subtasks")}
     finally:
         conn.close()
 
@@ -1526,13 +1762,20 @@ def fetch_subtasks(ticket_id):
 def create_subtask(ticket_id, payload, actor_user_id):
     backend = get_subtasks_backend()
     logs_backend = get_ticket_log_backend()
+    adapter = get_db_adapter()
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT TOP 1 TicketId FROM {qname('Tickets')} WHERE TicketId = ?",
-            (ticket_id,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"SELECT TicketId FROM {qname('Tickets')} WHERE TicketId = ? LIMIT 1",
+                (ticket_id,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 TicketId FROM {qname('Tickets')} WHERE TicketId = ?",
+                (ticket_id,),
+            )
         if not cursor.fetchone():
             raise RuntimeError(f"No existe TicketId={ticket_id}")
 
@@ -1546,7 +1789,6 @@ def create_subtask(ticket_id, payload, actor_user_id):
                 TicketId, Title, Description, AssigneeId, EstadoId,
                 NeedByAt, CompletedAt, SortOrder, CreatedBy, UpdatedBy
             )
-            OUTPUT INSERTED.SubtaskId
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -1562,20 +1804,37 @@ def create_subtask(ticket_id, payload, actor_user_id):
                 actor_user_id,
             ),
         )
-        row = cursor.fetchone()
-        new_subtask_id = row[0] if row else None
+        if adapter.is_sqlite:
+            new_subtask_id = cursor.lastrowid
+        else:
+            cursor.execute("SELECT CAST(SCOPE_IDENTITY() AS INT)")
+            row = cursor.fetchone()
+            new_subtask_id = row[0] if row else None
 
         if new_subtask_id is not None:
-            cursor.execute(
-                f"""
-                SELECT TOP 1
-                    SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
-                    NeedByAt, CompletedAt, SortOrder
-                FROM {backend["table"]}
-                WHERE SubtaskId = ?
-                """,
-                (new_subtask_id,),
-            )
+            if adapter.is_sqlite:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                        NeedByAt, CompletedAt, SortOrder
+                    FROM {backend["table"]}
+                    WHERE SubtaskId = ?
+                    LIMIT 1
+                    """,
+                    (new_subtask_id,),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT TOP 1
+                        SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                        NeedByAt, CompletedAt, SortOrder
+                    FROM {backend["table"]}
+                    WHERE SubtaskId = ?
+                    """,
+                    (new_subtask_id,),
+                )
             created_row = cursor.fetchone()
             if created_row:
                 created_cols = [
@@ -1625,19 +1884,33 @@ def update_subtask(subtask_id, updates, actor_user_id):
 
     backend = get_subtasks_backend()
     logs_backend = get_ticket_log_backend()
+    adapter = get_db_adapter()
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT TOP 1
-                SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
-                NeedByAt, CompletedAt, SortOrder
-            FROM {backend["table"]}
-            WHERE SubtaskId = ?
-            """,
-            (subtask_id,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"""
+                SELECT
+                    SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                    NeedByAt, CompletedAt, SortOrder
+                FROM {backend["table"]}
+                WHERE SubtaskId = ?
+                LIMIT 1
+                """,
+                (subtask_id,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT TOP 1
+                    SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                    NeedByAt, CompletedAt, SortOrder
+                FROM {backend["table"]}
+                WHERE SubtaskId = ?
+                """,
+                (subtask_id,),
+            )
         row = cursor.fetchone()
         if not row:
             raise RuntimeError(f"No existe SubtaskId={subtask_id}")
@@ -1676,7 +1949,7 @@ def update_subtask(subtask_id, updates, actor_user_id):
             set_parts.append(f"{field_name} = ?")
             params.append(value)
 
-        set_parts.append("UpdatedAt = SYSDATETIME()")
+        set_parts.append(f"UpdatedAt = {adapter.now_expr()}")
         set_parts.append("UpdatedBy = ?")
         params.append(actor_user_id)
         params.append(subtask_id)
@@ -1710,19 +1983,33 @@ def update_subtask(subtask_id, updates, actor_user_id):
 def delete_subtask(subtask_id, actor_user_id=None):
     backend = get_subtasks_backend()
     logs_backend = get_ticket_log_backend()
+    adapter = get_db_adapter()
     conn = get_azure_master_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT TOP 1
-                SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
-                NeedByAt, CompletedAt, SortOrder
-            FROM {backend["table"]}
-            WHERE SubtaskId = ?
-            """,
-            (subtask_id,),
-        )
+        if adapter.is_sqlite:
+            cursor.execute(
+                f"""
+                SELECT
+                    SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                    NeedByAt, CompletedAt, SortOrder
+                FROM {backend["table"]}
+                WHERE SubtaskId = ?
+                LIMIT 1
+                """,
+                (subtask_id,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT TOP 1
+                    SubtaskId, TicketId, Title, Description, AssigneeId, EstadoId,
+                    NeedByAt, CompletedAt, SortOrder
+                FROM {backend["table"]}
+                WHERE SubtaskId = ?
+                """,
+                (subtask_id,),
+            )
         row = cursor.fetchone()
         if not row:
             return False
@@ -1883,7 +2170,11 @@ class TicketAssistant:
 # 3. INTERFAZ STREAMLIT (ESTILO TARANTO)
 # ==========================================
 
-st.set_page_config(page_title="Gestar IA - Asistente de Tickets", layout="wide")
+st.set_page_config(
+    page_title="Gestar IA - Asistente de Tickets",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 st.markdown(
     """
@@ -1939,6 +2230,9 @@ st.markdown(
         }
     }
     .stApp { background-color: var(--bg-page); }
+    :root {
+        --global-header-offset: 5rem;
+    }
     html, body, [class*="css"] {
         font-family: "Lato", sans-serif;
         color: var(--text-primary);
@@ -1951,7 +2245,7 @@ st.markdown(
         font-weight: 700;
     }
     .block-container {
-        padding-top: 0.8rem;
+        padding-top: calc(0.8rem + var(--global-header-offset));
     }
     .taranto-header {
         background: var(--bg-surface);
@@ -1992,7 +2286,7 @@ st.markdown(
         border-radius: 10px;
         padding: 0.5rem;
         margin-top: 0.4rem;
-        min-height: calc(100dvh - 290px);
+        min-height: calc(100dvh - 290px - var(--global-header-offset));
     }
     [data-testid="stVerticalBlock"]:has(.dbg-panel-inner) {
         background: var(--bg-elevated) !important;
@@ -2171,11 +2465,7 @@ st.markdown(
         background: var(--bottom-bar-bg) !important;
         border-top: 1px solid var(--state-success);
     }
-    header { visibility: hidden; }
     footer { visibility: hidden; }
-    [data-testid="stSidebar"] { display: none !important; }
-    [data-testid="stSidebarCollapsedControl"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
     .top-meta {
         text-align: right;
         color: var(--brand-secondary);
@@ -2190,9 +2480,10 @@ st.markdown(
 startup_placeholder = st.empty()
 db_boot_error = None
 needs_master_bootstrap = "master_data" not in st.session_state
+_db_label = get_db_mode_label()
 if needs_master_bootstrap:
     with startup_placeholder.container():
-        st.info("Cargando... conectando con Azure SQL y preparando datos maestros.")
+        st.info(f"Cargando... conectando con {_db_label} y preparando datos maestros.")
 try:
     init_db()
     st.session_state.db_connected = True
@@ -2205,7 +2496,7 @@ if st.session_state.db_connected and needs_master_bootstrap:
     st.session_state.master_indexes = build_master_indexes(st.session_state.master_data)
 elif "master_data" not in st.session_state:
     startup_placeholder.empty()
-    st.error(f"❌ Error de conexión a Azure SQL: {db_boot_error}")
+    st.error(f"❌ Error de conexión a {_db_label}: {db_boot_error}")
     st.info("No hay datos en caché para continuar. Reintentá la conexión.")
     if st.button("Reintentar conexión", key="retry_db_bootstrap"):
         st.rerun()
@@ -2228,7 +2519,7 @@ else:
 startup_placeholder.empty()
 if db_boot_error and "master_data" in st.session_state:
     st.warning(
-        "⚠️ Conexión Azure SQL inestable. Se continúa con datos maestros en caché de la sesión."
+        f"⚠️ Conexión {_db_label} inestable. Se continúa con datos maestros en caché de la sesión."
     )
 
 try:
@@ -2237,17 +2528,36 @@ except Exception as user_err:
     st.error(f"❌ Error de usuarios de sesión: {user_err}")
     st.stop()
 
-# ── Sidebar visible solo para Administrador ──
-_sidebar_real_role = st.session_state.get("_real_user_role") or st.session_state.get(
-    "current_user_role"
+_sidebar_session_user = get_session_user(st.session_state.master_data)
+_sidebar_auth_identity = st.session_state.get("auth_identity")
+_sidebar_for_pablo = is_pablo_gauto_user(
+    _sidebar_session_user, _sidebar_auth_identity
 )
-if _sidebar_real_role == "Administrador":
+if _sidebar_for_pablo:
     st.markdown(
         """
     <style>
-        [data-testid="stSidebar"] { display: block !important; }
-        [data-testid="stSidebarCollapsedControl"] { display: block !important; }
-        [data-testid="collapsedControl"] { display: block !important; }
+        section[data-testid="stSidebar"] {
+            display: block !important;
+            visibility: visible !important;
+        }
+        [data-testid="stSidebarCollapsedControl"] {
+            display: block !important;
+        }
+        [data-testid="collapsedControl"] {
+            display: block !important;
+        }
+    </style>
+    """,
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        """
+    <style>
+        [data-testid="stSidebar"] { display: none !important; }
+        [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+        [data-testid="collapsedControl"] { display: none !important; }
     </style>
     """,
         unsafe_allow_html=True,
@@ -2338,6 +2648,8 @@ if "chat_error_message" not in st.session_state:
     st.session_state.chat_error_message = ""
 if "form_selected_ticket_id" not in st.session_state:
     st.session_state.form_selected_ticket_id = None
+if "form_grid_edit_mode" not in st.session_state:
+    st.session_state.form_grid_edit_mode = False
 if "ui_section" not in st.session_state:
     st.session_state.ui_section = "CHAT IA"
 
@@ -2831,36 +3143,283 @@ def render_form_mode():
                 return
 
             st.caption(f"Mostrando {len(df)} tickets.")
-            st.dataframe(
-                df,
-                width="stretch",
-                height=360,
-                hide_index=True,
-                selection_mode="single-row",
-                on_select="rerun",
-                key="form_ticket_grid",
-            )
+            SIN_DEFINIR = "Sin definir"
+            display_columns = [
+                "TicketId",
+                "Title",
+                "Description",
+                "Prioridad",
+                "Planta",
+                "Division",
+                "Area",
+                "Categoria",
+                "Subcategoria",
+                "Estado",
+                "Solicitante",
+                "Asignado",
+            ]
+            display_columns = [col for col in display_columns if col in df.columns]
+            grid_base_df = df[display_columns].copy()
+            grid_editor_df = grid_base_df.copy()
+
+            for col in [
+                "Prioridad",
+                "Planta",
+                "Area",
+                "Categoria",
+                "Subcategoria",
+                "Estado",
+                "Asignado",
+            ]:
+                if col in grid_editor_df.columns:
+                    grid_editor_df[col] = grid_editor_df[col].apply(
+                        lambda x: SIN_DEFINIR if pd.isna(x) else str(x)
+                    )
+            if "Description" in grid_editor_df.columns:
+                grid_editor_df["Description"] = grid_editor_df["Description"].apply(
+                    lambda x: "" if pd.isna(x) else str(x)
+                )
+
+            def _label_to_id_map(items):
+                by_name = {it["nombre"]: it["id"] for it in items}
+                by_name[SIN_DEFINIR] = None
+                return by_name
+
+            user_by_name = {u["username"]: u["id"] for u in users}
+            user_by_name[SIN_DEFINIR] = None
+
+            editable_field_map = {
+                "Description": {"ticket_field": "Description", "label_to_id": None},
+                "Prioridad": {
+                    "ticket_field": "PrioridadId",
+                    "label_to_id": _label_to_id_map(prioridades),
+                },
+                "Planta": {
+                    "ticket_field": "PlantaId",
+                    "label_to_id": _label_to_id_map(plantas),
+                },
+                "Area": {
+                    "ticket_field": "AreaId",
+                    "label_to_id": _label_to_id_map(areas),
+                },
+                "Categoria": {
+                    "ticket_field": "CategoriaId",
+                    "label_to_id": _label_to_id_map(categorias),
+                },
+                "Subcategoria": {
+                    "ticket_field": "SubcategoriaId",
+                    "label_to_id": _label_to_id_map(subcategorias),
+                },
+                "Estado": {
+                    "ticket_field": "EstadoId",
+                    "label_to_id": _label_to_id_map(estados),
+                },
+                "Asignado": {"ticket_field": "AssigneeId", "label_to_id": user_by_name},
+            }
+            editable_field_map = {
+                k: v for k, v in editable_field_map.items() if k in display_columns
+            }
+
+            def _normalize_select_label(value):
+                if value is None or pd.isna(value):
+                    return SIN_DEFINIR
+                txt = str(value).strip()
+                return txt if txt else SIN_DEFINIR
+
+            def _normalize_text_value(value):
+                if value is None or pd.isna(value):
+                    return ""
+                return str(value)
+
+            def _build_bulk_updates(base_df_local, edited_df_local):
+                if edited_df_local is None or edited_df_local.empty:
+                    return {}
+                base_by_ticket = {
+                    int(row["TicketId"]): row for row in base_df_local.to_dict("records")
+                }
+                updates_by_ticket = {}
+                for row in edited_df_local.to_dict("records"):
+                    ticket_id = int(row["TicketId"])
+                    base_row = base_by_ticket.get(ticket_id)
+                    if not base_row:
+                        continue
+                    ticket_updates = {}
+                    for col_name, cfg in editable_field_map.items():
+                        if col_name not in row:
+                            continue
+                        if col_name == "Description":
+                            old_val = _normalize_text_value(base_row.get(col_name))
+                            new_val = _normalize_text_value(row.get(col_name))
+                            if old_val != new_val:
+                                ticket_updates[cfg["ticket_field"]] = new_val
+                            continue
+
+                        old_label = _normalize_select_label(base_row.get(col_name))
+                        new_label = _normalize_select_label(row.get(col_name))
+                        if old_label != new_label:
+                            ticket_updates[cfg["ticket_field"]] = cfg["label_to_id"].get(
+                                new_label
+                            )
+                    if ticket_updates:
+                        updates_by_ticket[ticket_id] = ticket_updates
+                return updates_by_ticket
+
+            grid_edit_mode = st.session_state.get("form_grid_edit_mode", False)
+            pending_updates = {}
+
+            if grid_edit_mode:
+                st.info(
+                    "Modo edición activo: editá celdas y usá Guardar cambios para registrar todo en el log del ticket."
+                )
+                select_options = {
+                    "Prioridad": [SIN_DEFINIR] + [p["nombre"] for p in prioridades],
+                    "Planta": [SIN_DEFINIR] + [p["nombre"] for p in plantas],
+                    "Area": [SIN_DEFINIR] + [a["nombre"] for a in areas],
+                    "Categoria": [SIN_DEFINIR] + [c["nombre"] for c in categorias],
+                    "Subcategoria": [SIN_DEFINIR]
+                    + [s["nombre"] for s in subcategorias],
+                    "Estado": [SIN_DEFINIR] + [e["nombre"] for e in estados],
+                    "Asignado": [SIN_DEFINIR] + [u["username"] for u in users],
+                }
+                column_config = {
+                    "Description": st.column_config.TextColumn("Description", width="large")
+                }
+                for col_name, options in select_options.items():
+                    if col_name in display_columns:
+                        column_config[col_name] = st.column_config.SelectboxColumn(
+                            col_name,
+                            options=options,
+                        )
+
+                disabled_columns = [
+                    col
+                    for col in display_columns
+                    if col not in editable_field_map.keys()
+                ]
+                edited_grid_df = st.data_editor(
+                    grid_editor_df,
+                    key="form_ticket_grid_editor",
+                    hide_index=True,
+                    use_container_width=True,
+                    height=360,
+                    num_rows="fixed",
+                    column_config=column_config,
+                    disabled=disabled_columns,
+                )
+
+                pending_updates = _build_bulk_updates(grid_base_df, edited_grid_df)
+                pending_count = len(pending_updates)
+                if pending_count > 0:
+                    st.warning(
+                        f"Hay {pending_count} ticket(s) con cambios sin guardar en la grilla."
+                    )
+                else:
+                    st.caption("No hay cambios pendientes.")
+
+                b1, b2, b3, _ = st.columns([1.4, 1.2, 1.2, 4.2], gap="small")
+                with b1:
+                    save_grid_changes = st.button(
+                        "Guardar cambios",
+                        key="form_grid_save_changes",
+                        type="primary",
+                        disabled=(pending_count == 0),
+                    )
+                with b2:
+                    discard_grid_changes = st.button(
+                        "Descartar cambios", key="form_grid_discard_changes"
+                    )
+                with b3:
+                    exit_grid_mode = st.button(
+                        "Salir edición", key="form_grid_exit_mode"
+                    )
+
+                if save_grid_changes:
+                    session_user = get_session_user(st.session_state.master_data)
+                    actor_user_id = session_user["id"] if session_user else None
+                    success_count = 0
+                    failed_updates = []
+                    for ticket_id, updates in pending_updates.items():
+                        try:
+                            update_ticket_from_form(
+                                ticket_id,
+                                updates,
+                                actor_user_id=actor_user_id,
+                            )
+                            success_count += 1
+                        except Exception as e:
+                            failed_updates.append((ticket_id, str(e)))
+
+                    if success_count > 0:
+                        st.success(
+                            f"Se guardaron cambios en {success_count} ticket(s)."
+                        )
+                    if failed_updates:
+                        failed_list = ", ".join(
+                            [f"#{ticket_id}" for ticket_id, _err in failed_updates[:10]]
+                        )
+                        st.error(
+                            f"No se pudieron guardar {len(failed_updates)} ticket(s): {failed_list}."
+                        )
+                    st.rerun()
+
+                if discard_grid_changes:
+                    st.session_state.pop("form_ticket_grid_editor", None)
+                    st.rerun()
+
+                if exit_grid_mode:
+                    if pending_count > 0:
+                        st.warning(
+                            "Hay cambios sin guardar. Guardá o descartá antes de salir del modo edición."
+                        )
+                    else:
+                        st.session_state.form_grid_edit_mode = False
+                        st.session_state.pop("form_ticket_grid_editor", None)
+                        st.rerun()
+            else:
+                st.dataframe(
+                    grid_base_df,
+                    width="stretch",
+                    height=360,
+                    hide_index=True,
+                    selection_mode="single-row",
+                    on_select="rerun",
+                    key="form_ticket_grid",
+                )
+                selection = st.session_state.get("form_ticket_grid", {}).get(
+                    "selection", {}
+                )
+                selected_rows = selection.get("rows", [])
+                selected_ticket_id = None
+                if selected_rows:
+                    row_idx = selected_rows[0]
+                    selected_ticket_id = int(grid_base_df.iloc[row_idx]["TicketId"])
+                    st.caption(f"Ticket seleccionado: #{selected_ticket_id}")
+
+                b1, b2, _ = st.columns([1.2, 1, 6], gap="small")
+                with b1:
+                    enter_grid_mode = st.button(
+                        "Modo edición", key="form_enable_grid_edit", type="primary"
+                    )
+                with b2:
+                    open_detail = st.button("Editar detalle", key="form_open_edit")
+
+                if enter_grid_mode:
+                    st.session_state.form_grid_edit_mode = True
+                    st.session_state.pop("form_ticket_grid_editor", None)
+                    st.rerun()
+
+                if open_detail:
+                    if selected_ticket_id is None:
+                        st.warning("Seleccioná una fila de la grilla antes de editar.")
+                    else:
+                        st.session_state.form_selected_ticket_id = selected_ticket_id
+                        st.rerun()
+
             render_printable_dataframe(
                 df=df,
                 title=f"Bandeja de tickets filtrados ({len(df)} registros)",
                 state_key="form_ticket_grid_print",
             )
-            selection = st.session_state.get("form_ticket_grid", {}).get(
-                "selection", {}
-            )
-            selected_rows = selection.get("rows", [])
-            selected_ticket_id = None
-            if selected_rows:
-                row_idx = selected_rows[0]
-                selected_ticket_id = int(df.iloc[row_idx]["TicketId"])
-                st.caption(f"Ticket seleccionado: #{selected_ticket_id}")
-
-            if st.button("Editar", key="form_open_edit", type="primary"):
-                if selected_ticket_id is None:
-                    st.warning("Seleccioná una fila de la grilla antes de editar.")
-                else:
-                    st.session_state.form_selected_ticket_id = selected_ticket_id
-                    st.rerun()
             return
 
         selected_ticket_id = st.session_state.form_selected_ticket_id
@@ -3357,7 +3916,6 @@ with st.container():
             else:
                 st.caption("Usuario logueado")
                 st.markdown("No identificado")
-            st.caption(f"Version {app_version}")
         with ux2:
             cls = "active-nav" if st.session_state.ui_section == "CHAT IA" else ""
             st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
@@ -3404,14 +3962,10 @@ if st.session_state.ui_section == "CHAT IA":
 
 # Panel izquierdo (sidebar): simulador de rol / impersonación
 with st.sidebar:
-    # ── Determinar si el usuario real es Administrador ──
-    _real_role = st.session_state.get("_real_user_role")
-    _is_real_admin = (
-        st.session_state.get("current_user_role") == "Administrador"
-        if _real_role is None
-        else _real_role == "Administrador"
-    )
-    if _is_real_admin:
+    st.caption(f"Version {app_version}")
+    st.caption(get_db_mode_message())
+
+    if _sidebar_for_pablo:
         st.markdown("### 🔧 Simulador de Rol")
 
         # ── Preparar datos ──

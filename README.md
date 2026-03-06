@@ -43,6 +43,13 @@ Este es un MVP de un **Asistente de Tickets** que utiliza una arquitectura híbr
 3.  **Configurar Variables**:
     - Obtén una API Key de [Google AI Studio](https://aistudio.google.com/).
     - Al ejecutar la app, introduce la API Key en el campo correspondiente del Sidebar.
+    - Para seleccionar backend de base de datos:
+      - `DB_MODE=azure` (default, usa `ODBC_CONN_STR`)
+      - `DB_MODE=sqlite` (usa `SQLITE_PATH`, por ejemplo `tickets_mvp.db`)
+    - En modo SQLite puedes bootstrapear el esquema con:
+    ```bash
+    python scripts/bootstrap_sqlite.py --db tickets_mvp.db
+    ```
 
 4.  **Ejecutar la aplicación**:
     ```bash

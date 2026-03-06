@@ -67,7 +67,12 @@ def _worker_loop():
 
 
 def _qname(table_name):
-    return f"{_RUNTIME['get_schema']()}.{table_name}"
+    schema = str(_RUNTIME["get_schema"]() or "").strip()
+    return f"{schema}.{table_name}" if schema else table_name
+
+
+def _is_sqlite_conn(conn):
+    return conn.__class__.__module__.startswith("sqlite3")
 
 
 def _process_pending_notifications_batch(batch_size=20):
@@ -91,25 +96,46 @@ def _release_stale_claims():
     conn = _RUNTIME["get_connection"]()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            UPDATE p
-            SET
-                p.FieldName = 'NotificacionPendiente',
-                p.ChangedAt = SYSUTCDATETIME()
-            FROM {_qname("TicketLogs")} p
-            WHERE p.FieldName = 'NotificacionEnProceso'
-              AND DATEDIFF(SECOND, p.ChangedAt, SYSUTCDATETIME()) >= ?
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM {_qname("TicketLogs")} e
-                  WHERE e.TicketId = p.TicketId
-                    AND e.FieldName = 'NotificacionEnviada'
-                    AND e.OldValue = p.OldValue
-              )
-            """,
-            (_RUNTIME["claim_timeout_seconds"],),
-        )
+        if _is_sqlite_conn(conn):
+            interval = f"-{int(_RUNTIME['claim_timeout_seconds'])} seconds"
+            cursor.execute(
+                f"""
+                UPDATE {_qname("TicketLogs")}
+                SET
+                    FieldName = 'NotificacionPendiente',
+                    ChangedAt = CURRENT_TIMESTAMP
+                WHERE FieldName = 'NotificacionEnProceso'
+                  AND datetime(ChangedAt) <= datetime('now', ?)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM {_qname("TicketLogs")} e
+                      WHERE e.TicketId = {_qname("TicketLogs")}.TicketId
+                        AND e.FieldName = 'NotificacionEnviada'
+                        AND e.OldValue = {_qname("TicketLogs")}.OldValue
+                  )
+                """,
+                (interval,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                UPDATE p
+                SET
+                    p.FieldName = 'NotificacionPendiente',
+                    p.ChangedAt = SYSUTCDATETIME()
+                FROM {_qname("TicketLogs")} p
+                WHERE p.FieldName = 'NotificacionEnProceso'
+                  AND DATEDIFF(SECOND, p.ChangedAt, SYSUTCDATETIME()) >= ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM {_qname("TicketLogs")} e
+                      WHERE e.TicketId = p.TicketId
+                        AND e.FieldName = 'NotificacionEnviada'
+                        AND e.OldValue = p.OldValue
+                  )
+                """,
+                (_RUNTIME["claim_timeout_seconds"],),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -119,12 +145,17 @@ def _claim_one_pending():
     conn = _RUNTIME["get_connection"]()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            WITH next_pending AS (
-                SELECT TOP 1
-                    p.LogId
-                FROM {_qname("TicketLogs")} p WITH (UPDLOCK, READPAST, ROWLOCK)
+        if _is_sqlite_conn(conn):
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                f"""
+                SELECT
+                    p.LogId,
+                    p.TicketId,
+                    p.UserId,
+                    p.OldValue,
+                    p.NewValue
+                FROM {_qname("TicketLogs")} p
                 WHERE p.FieldName = 'NotificacionPendiente'
                   AND NOT EXISTS (
                       SELECT 1
@@ -135,22 +166,53 @@ def _claim_one_pending():
                         AND sub.LogId <> p.LogId
                   )
                 ORDER BY p.ChangedAt ASC, p.LogId ASC
+                LIMIT 1
+                """
             )
-            UPDATE p
-            SET
-                p.FieldName = 'NotificacionEnProceso',
-                p.ChangedAt = SYSUTCDATETIME()
-            OUTPUT
-                inserted.LogId,
-                inserted.TicketId,
-                inserted.UserId,
-                inserted.OldValue,
-                inserted.NewValue
-            FROM {_qname("TicketLogs")} p
-            INNER JOIN next_pending np ON np.LogId = p.LogId;
-            """
-        )
-        row = cursor.fetchone()
+            row = cursor.fetchone()
+            if row:
+                cursor.execute(
+                    f"""
+                    UPDATE {_qname("TicketLogs")}
+                    SET FieldName = 'NotificacionEnProceso',
+                        ChangedAt = CURRENT_TIMESTAMP
+                    WHERE LogId = ?
+                    """,
+                    (row[0],),
+                )
+        else:
+            cursor.execute(
+                f"""
+                WITH next_pending AS (
+                    SELECT TOP 1
+                        p.LogId
+                    FROM {_qname("TicketLogs")} p WITH (UPDLOCK, READPAST, ROWLOCK)
+                    WHERE p.FieldName = 'NotificacionPendiente'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM {_qname("TicketLogs")} sub
+                          WHERE sub.TicketId = p.TicketId
+                            AND sub.OldValue = p.OldValue
+                            AND sub.FieldName IN ('NotificacionEnProceso', 'NotificacionEnviada')
+                            AND sub.LogId <> p.LogId
+                      )
+                    ORDER BY p.ChangedAt ASC, p.LogId ASC
+                )
+                UPDATE p
+                SET
+                    p.FieldName = 'NotificacionEnProceso',
+                    p.ChangedAt = SYSUTCDATETIME()
+                OUTPUT
+                    inserted.LogId,
+                    inserted.TicketId,
+                    inserted.UserId,
+                    inserted.OldValue,
+                    inserted.NewValue
+                FROM {_qname("TicketLogs")} p
+                INNER JOIN next_pending np ON np.LogId = p.LogId;
+                """
+            )
+            row = cursor.fetchone()
         conn.commit()
         return row
     finally:
@@ -217,10 +279,16 @@ def _fetch_user_contact(user_id):
     conn = _RUNTIME["get_connection"]()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT TOP 1 Username, Email FROM {_qname('Users')} WHERE UserId = ?",
-            (user_id,),
-        )
+        if _is_sqlite_conn(conn):
+            cursor.execute(
+                f"SELECT Username, Email FROM {_qname('Users')} WHERE UserId = ? LIMIT 1",
+                (user_id,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT TOP 1 Username, Email FROM {_qname('Users')} WHERE UserId = ?",
+                (user_id,),
+            )
         row = cursor.fetchone()
         if not row:
             return None, None
